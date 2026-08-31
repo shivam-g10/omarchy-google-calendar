@@ -1,3 +1,4 @@
+use crate::browser::{BrowserOpenResult, open_browser};
 use crate::{CalendarError, Database, GoogleApi, Result, safe_message};
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use serde_json::{Value, json};
@@ -373,11 +374,20 @@ impl CalendarService {
                 "Agenda item link is not HTTPS",
             ));
         }
-        if !open_browser(&url) {
-            return Err(CalendarError::new(
-                "browser_open_failed",
-                "Could not open agenda item",
-            ));
+        match open_browser(&url) {
+            BrowserOpenResult::Opened => {}
+            BrowserOpenResult::BraveHandoffFailed => {
+                return Err(CalendarError::new(
+                    "browser_handoff_failed",
+                    "Could not open agenda item; fully exit and reopen Brave, then try again",
+                ));
+            }
+            BrowserOpenResult::Failed => {
+                return Err(CalendarError::new(
+                    "browser_open_failed",
+                    "Could not open agenda item",
+                ));
+            }
         }
         Ok(json!({"itemId": item_id, "opened": true}))
     }
@@ -437,24 +447,6 @@ impl<'a> OAuthGuard<'a> {
 impl Drop for OAuthGuard<'_> {
     fn drop(&mut self) {
         self.in_progress.store(false, Ordering::Release);
-    }
-}
-
-fn open_browser(url: &str) -> bool {
-    let child = Command::new("xdg-open")
-        .arg(url)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn();
-    match child {
-        Ok(mut child) => {
-            thread::spawn(move || {
-                let _ = child.wait();
-            });
-            true
-        }
-        Err(_) => false,
     }
 }
 

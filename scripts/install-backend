@@ -8,6 +8,8 @@ calendar_bin_dir="${HOME}/.local/bin"
 calendar_unit_dir="${XDG_CONFIG_HOME:-${HOME}/.config}/systemd/user"
 calendar_binary="${calendar_cache_root}/release/omarchy-calendar"
 calendar_installed_binary="${calendar_bin_dir}/omarchy-calendar"
+calendar_runtime_dir="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+calendar_socket="${calendar_runtime_dir}/omarchy-calendar.sock"
 
 for calendar_command in cargo pkg-config secret-tool systemctl xdg-open; do
   if ! command -v "${calendar_command}" >/dev/null 2>&1; then
@@ -39,5 +41,15 @@ systemctl --user daemon-reload
 systemctl --user enable omarchy-calendar.service
 systemctl --user restart omarchy-calendar.service
 systemctl --user is-active --quiet omarchy-calendar.service
+
+for _ in {1..50}; do
+  [[ -S "${calendar_socket}" ]] && break
+  sleep 0.1
+done
+
+if [[ ! -S "${calendar_socket}" ]]; then
+  echo "Calendar service started without creating ${calendar_socket}" >&2
+  exit 1
+fi
 
 echo "Omarchy calendar backend installed and running."

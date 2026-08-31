@@ -1,3 +1,4 @@
+use crate::browser::{BrowserOpenResult, open_browser};
 use crate::{AuthResult, CalendarEntry, CalendarError, Result, TaskListEntry, safe_message};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -10,7 +11,6 @@ use std::fs;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -54,7 +54,7 @@ pub struct GoogleClient {
     client_path: PathBuf,
     agent: ureq::Agent,
     now: Arc<dyn Fn() -> DateTime<Utc> + Send + Sync>,
-    browser_open: Arc<dyn Fn(&str) -> bool + Send + Sync>,
+    browser_open: Arc<dyn Fn(&str) -> BrowserOpenResult + Send + Sync>,
 }
 
 #[derive(Debug)]
@@ -290,11 +290,20 @@ impl GoogleApi for GoogleClient {
                 .append_pair("code_challenge", &challenge)
                 .append_pair("code_challenge_method", "S256");
         }
-        if !(self.browser_open)(authorization_url.as_str()) {
-            return Err(CalendarError::new(
-                "browser_open_failed",
-                "Could not open Google sign-in",
-            ));
+        match (self.browser_open)(authorization_url.as_str()) {
+            BrowserOpenResult::Opened => {}
+            BrowserOpenResult::BraveHandoffFailed => {
+                return Err(CalendarError::new(
+                    "browser_handoff_failed",
+                    "Could not open Google sign-in; fully exit and reopen Brave, then try again",
+                ));
+            }
+            BrowserOpenResult::Failed => {
+                return Err(CalendarError::new(
+                    "browser_open_failed",
+                    "Could not open Google sign-in",
+                ));
+            }
         }
         let values = receive_callback(&listener, Duration::from_secs(OAUTH_TIMEOUT_SECONDS))?
             .ok_or_else(|| CalendarError::new("oauth_timeout", "Google sign-in timed out"))?;
@@ -615,24 +624,6 @@ fn random_base64(bytes: usize) -> String {
     let mut raw = vec![0_u8; bytes];
     rand::rngs::OsRng.fill_bytes(&mut raw);
     URL_SAFE_NO_PAD.encode(raw)
-}
-
-fn open_browser(url: &str) -> bool {
-    let child = Command::new("xdg-open")
-        .arg(url)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn();
-    match child {
-        Ok(mut child) => {
-            thread::spawn(move || {
-                let _ = child.wait();
-            });
-            true
-        }
-        Err(_) => false,
-    }
 }
 
 fn google_error_message(payload: &Value) -> Option<String> {

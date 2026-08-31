@@ -31,6 +31,9 @@ default-browser session. The button stays disabled while sign-in is pending;
 after a successful callback, that tab continues to this project's GitHub page.
 Repeat for every account you want to combine.
 
+If Brave cannot accept the local handoff, fully quit it with **Menu → Exit**
+and reopen it. Closing its windows alone can leave the browser process running.
+
 You can also connect an account from a terminal:
 
 ```bash

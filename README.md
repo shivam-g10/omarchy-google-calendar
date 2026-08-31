@@ -12,7 +12,8 @@ opens a unified calendar when clicked.
 - Filters the agenda by account while keeping one calendar view.
 - Shows calendar dots, week numbers, year progress, and a daily agenda.
 - Connects accounts through browser-based OAuth with PKCE and state validation.
-- Reuses the desktop's existing browser session and prevents duplicate sign-in windows.
+- Reuses Omarchy's existing `brave-bin` session through its verified local handoff socket and
+  prevents duplicate sign-in windows.
 - Stores refresh tokens in Secret Service, not in the plugin or SQLite cache.
 - Uses a native Rust service with incremental calendar sync and expired
   sync-token recovery.

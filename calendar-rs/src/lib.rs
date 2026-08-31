@@ -1,3 +1,4 @@
+mod browser;
 mod database;
 mod google;
 mod protocol;
