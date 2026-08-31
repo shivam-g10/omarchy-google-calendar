@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+calendar_script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+calendar_repo_root="$(cd -- "${calendar_script_dir}/.." && pwd)"
+calendar_cache_root="${XDG_CACHE_HOME:-${HOME}/.cache}/omarchy-google-calendar"
+calendar_bin_dir="${HOME}/.local/bin"
+calendar_unit_dir="${XDG_CONFIG_HOME:-${HOME}/.config}/systemd/user"
+calendar_binary="${calendar_cache_root}/release/omarchy-calendar"
+calendar_installed_binary="${calendar_bin_dir}/omarchy-calendar"
+
+for calendar_command in cargo pkg-config secret-tool systemctl xdg-open; do
+  if ! command -v "${calendar_command}" >/dev/null 2>&1; then
+    echo "Missing required command: ${calendar_command}" >&2
+    exit 1
+  fi
+done
+
+if ! pkg-config --exists sqlite3; then
+  echo "Missing required library: sqlite3" >&2
+  exit 1
+fi
+
+cargo build \
+  --locked \
+  --release \
+  --manifest-path "${calendar_repo_root}/calendar-rs/Cargo.toml" \
+  --target-dir "${calendar_cache_root}"
+
+install -d -m 0755 "${calendar_bin_dir}"
+install -m 0755 "${calendar_binary}" "${calendar_installed_binary}.new"
+mv -f "${calendar_installed_binary}.new" "${calendar_installed_binary}"
+
+install -Dm0644 \
+  "${calendar_repo_root}/systemd/omarchy-calendar.service" \
+  "${calendar_unit_dir}/omarchy-calendar.service"
+
+systemctl --user daemon-reload
+systemctl --user enable omarchy-calendar.service
+systemctl --user restart omarchy-calendar.service
+systemctl --user is-active --quiet omarchy-calendar.service
+
+echo "Omarchy calendar backend installed and running."

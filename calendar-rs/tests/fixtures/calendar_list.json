@@ -1,0 +1,12 @@
+{
+  "items": [
+    {
+      "id": "primary@example.com",
+      "summary": "Personal",
+      "backgroundColor": "#4285f4",
+      "primary": true,
+      "selected": true,
+      "defaultReminders": [{"method": "popup", "minutes": 10}]
+    }
+  ]
+}

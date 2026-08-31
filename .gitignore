@@ -1,0 +1,12 @@
+target/
+__pycache__/
+*.py[cod]
+.DS_Store
+.env*
+calendar-rs/.cargo/config.toml
+
+# Local Google credentials and calendar state must never be committed.
+google-client.json
+*.db
+*.db-*
+*.sock

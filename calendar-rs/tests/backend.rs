@@ -1,0 +1,480 @@
+use omarchy_calendar::{
+    AuthResult, CalendarEntry, CalendarError, CalendarServer, CalendarService, Database, GoogleApi,
+    Result, SecretStoreApi, TaskListEntry,
+};
+use serde_json::{Value, json};
+use std::collections::HashMap;
+use std::fs;
+use std::io::{BufRead, BufReader, Write};
+use std::os::unix::fs::PermissionsExt;
+use std::os::unix::net::UnixStream;
+use std::sync::{Arc, Mutex};
+use std::thread;
+
+fn fixture(name: &str) -> Value {
+    let content = match name {
+        "calendar_list.json" => include_str!("fixtures/calendar_list.json"),
+        "events_initial.json" => include_str!("fixtures/events_initial.json"),
+        "events_incremental.json" => include_str!("fixtures/events_incremental.json"),
+        "task_lists.json" => include_str!("fixtures/task_lists.json"),
+        "tasks.json" => include_str!("fixtures/tasks.json"),
+        _ => panic!("unknown fixture"),
+    };
+    serde_json::from_str(content).unwrap()
+}
+
+#[derive(Default)]
+struct FakeSecrets {
+    values: Mutex<HashMap<String, String>>,
+}
+
+impl SecretStoreApi for FakeSecrets {
+    fn store(&self, account_id: &str, refresh_token: &str) -> Result<()> {
+        self.values
+            .lock()
+            .unwrap()
+            .insert(account_id.to_owned(), refresh_token.to_owned());
+        Ok(())
+    }
+
+    fn lookup(&self, account_id: &str) -> Result<String> {
+        self.values
+            .lock()
+            .unwrap()
+            .get(account_id)
+            .cloned()
+            .ok_or_else(|| {
+                CalendarError::new("credentials_missing", "Google account needs reconnection")
+            })
+    }
+
+    fn clear(&self, account_id: &str) -> Result<()> {
+        self.values.lock().unwrap().remove(account_id);
+        Ok(())
+    }
+}
+
+struct FakeGoogle {
+    calendar_payload: Value,
+    initial_payload: Value,
+    incremental_payload: Value,
+    task_lists_payload: Value,
+    tasks_payload: Value,
+    sync_mode: Mutex<String>,
+    seen_tokens: Mutex<Vec<Option<String>>>,
+    revoked: Mutex<Vec<String>>,
+}
+
+impl FakeGoogle {
+    fn new() -> Self {
+        Self {
+            calendar_payload: fixture("calendar_list.json"),
+            initial_payload: fixture("events_initial.json"),
+            incremental_payload: fixture("events_incremental.json"),
+            task_lists_payload: fixture("task_lists.json"),
+            tasks_payload: fixture("tasks.json"),
+            sync_mode: Mutex::new("initial".into()),
+            seen_tokens: Mutex::new(Vec::new()),
+            revoked: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn check_access(access_token: &str) -> Result<()> {
+        if access_token == "ephemeral-access-token" {
+            Ok(())
+        } else {
+            Err(CalendarError::new("test_error", "unexpected access token"))
+        }
+    }
+}
+
+impl GoogleApi for FakeGoogle {
+    fn configured(&self) -> bool {
+        true
+    }
+
+    fn authorize(&self) -> Result<AuthResult> {
+        Ok(AuthResult {
+            refresh_token: "refresh-token-never-cache".into(),
+            access_token: "access-token-never-cache".into(),
+            subject: "google-subject-1".into(),
+            email: "person@example.com".into(),
+        })
+    }
+
+    fn refresh_access_token(&self, refresh_token: &str) -> Result<String> {
+        if refresh_token != "refresh-token-never-cache" {
+            return Err(CalendarError::new("test_error", "unexpected refresh token"));
+        }
+        Ok("ephemeral-access-token".into())
+    }
+
+    fn revoke(&self, refresh_token: &str) -> bool {
+        self.revoked.lock().unwrap().push(refresh_token.to_owned());
+        true
+    }
+
+    fn list_calendars(&self, access_token: &str) -> Result<Vec<CalendarEntry>> {
+        Self::check_access(access_token)?;
+        Ok(self.calendar_payload["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| CalendarEntry {
+                id: item["id"].as_str().unwrap().into(),
+                label: item["summary"].as_str().unwrap().into(),
+                color: item["backgroundColor"].as_str().unwrap().into(),
+                selected: true,
+                primary: item["primary"].as_bool().unwrap_or(false),
+                default_reminders: item
+                    .get("defaultReminders")
+                    .cloned()
+                    .unwrap_or_else(|| json!([])),
+            })
+            .collect())
+    }
+
+    fn list_events(
+        &self,
+        access_token: &str,
+        _calendar_id: &str,
+        sync_token: Option<&str>,
+    ) -> Result<(Vec<Value>, String)> {
+        Self::check_access(access_token)?;
+        self.seen_tokens
+            .lock()
+            .unwrap()
+            .push(sync_token.map(ToOwned::to_owned));
+        let mut sync_mode = self.sync_mode.lock().unwrap();
+        if *sync_mode == "gone_once" && sync_token.is_some() {
+            *sync_mode = "initial".into();
+            return Err(CalendarError::google_http(
+                410,
+                "Sync token is no longer valid",
+            ));
+        }
+        let payload = if sync_token.is_none() {
+            &self.initial_payload
+        } else {
+            &self.incremental_payload
+        };
+        Ok((
+            payload["items"].as_array().unwrap().clone(),
+            payload["nextSyncToken"].as_str().unwrap().into(),
+        ))
+    }
+
+    fn list_task_lists(&self, access_token: &str) -> Result<Vec<TaskListEntry>> {
+        Self::check_access(access_token)?;
+        Ok(self.task_lists_payload["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| TaskListEntry {
+                id: item["id"].as_str().unwrap().into(),
+                label: item["title"].as_str().unwrap().into(),
+                updated: item["updated"].as_str().map(ToOwned::to_owned),
+            })
+            .collect())
+    }
+
+    fn list_tasks(&self, access_token: &str, _task_list_id: &str) -> Result<Vec<Value>> {
+        Self::check_access(access_token)?;
+        Ok(self.tasks_payload["items"].as_array().unwrap().clone())
+    }
+}
+
+struct Harness {
+    _temporary: tempfile::TempDir,
+    database: Arc<Database>,
+    google: Arc<FakeGoogle>,
+    secrets: Arc<FakeSecrets>,
+    service: Arc<CalendarService>,
+}
+
+impl Harness {
+    fn new() -> Self {
+        let temporary = tempfile::tempdir().unwrap();
+        let database = Arc::new(Database::new(temporary.path().join("state/agenda.db")).unwrap());
+        let google = Arc::new(FakeGoogle::new());
+        let secrets = Arc::new(FakeSecrets::default());
+        let google_api: Arc<dyn GoogleApi> = google.clone();
+        let secret_api: Arc<dyn SecretStoreApi> = secrets.clone();
+        let service = Arc::new(CalendarService::new(
+            database.clone(),
+            google_api,
+            secret_api,
+        ));
+        Self {
+            _temporary: temporary,
+            database,
+            google,
+            secrets,
+            service,
+        }
+    }
+
+    fn add_database_account(&self, account_id: &str) {
+        self.database
+            .upsert_account(
+                account_id,
+                "google-subject-1",
+                "person@example.com",
+                "Personal",
+            )
+            .unwrap();
+        self.secrets
+            .store(account_id, "refresh-token-never-cache")
+            .unwrap();
+    }
+}
+
+#[test]
+fn database_and_socket_are_private() {
+    let harness = Harness::new();
+    assert_eq!(
+        fs::metadata(harness.database.path())
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
+        0o600
+    );
+    let socket_path = harness
+        ._temporary
+        .path()
+        .join("runtime/omarchy-calendar.sock");
+    let server = CalendarServer::bind(&socket_path, harness.service).unwrap();
+    assert_eq!(
+        fs::metadata(&socket_path).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    server.cleanup();
+}
+
+#[test]
+fn initial_and_incremental_sync_normalize_agenda() {
+    let harness = Harness::new();
+    harness.add_database_account("account-1");
+    let first = harness.service.refresh(&json!({})).unwrap();
+    assert_eq!(first["accounts"][0]["ok"], true);
+    let initial = harness
+        .service
+        .agenda(&json!({"start": "2026-08-31", "end": "2026-09-01", "account": "all"}))
+        .unwrap();
+    let types = initial["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| item["type"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(types, ["event", "task", "event"]);
+    let review = initial["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["title"] == "Design review")
+        .unwrap();
+    assert_eq!(review["icalUid"], "shared@example.com");
+    assert_eq!(review["occurrenceStart"], "2026-08-31T10:00:00+05:30");
+    assert_eq!(
+        review["reminders"],
+        json!([{"method": "popup", "minutes": 10}])
+    );
+    assert_eq!(review["accountId"], "account-1");
+    let task = initial["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["type"] == "task")
+        .unwrap();
+    assert_eq!(task["dueDate"], "2026-08-31");
+
+    let second = harness.service.refresh(&json!({})).unwrap();
+    assert_eq!(second["accounts"][0]["ok"], true);
+    let changed = harness
+        .service
+        .agenda(&json!({"start": "2026-08-31", "end": "2026-09-01", "account": "account-1"}))
+        .unwrap();
+    assert!(
+        !changed["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["title"] == "All-day plan")
+    );
+    let moved = changed["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["type"] == "event")
+        .unwrap();
+    assert_eq!(moved["title"], "Design review moved");
+    assert_eq!(moved["occurrenceStart"], "2026-08-31T10:00:00+05:30");
+    assert_eq!(
+        *harness.google.seen_tokens.lock().unwrap(),
+        vec![None, Some("sync-1".into())]
+    );
+}
+
+#[test]
+fn expired_sync_token_rebuilds_calendar() {
+    let harness = Harness::new();
+    harness.add_database_account("account-1");
+    harness.service.refresh(&json!({})).unwrap();
+    *harness.google.sync_mode.lock().unwrap() = "gone_once".into();
+    let result = harness.service.refresh(&json!({})).unwrap();
+    assert_eq!(result["accounts"][0]["ok"], true);
+    let seen = harness.google.seen_tokens.lock().unwrap();
+    assert_eq!(&seen[seen.len() - 2..], &[Some("sync-1".into()), None]);
+    let agenda = harness
+        .service
+        .agenda(&json!({"start": "2026-08-31", "end": "2026-09-01", "account": "all"}))
+        .unwrap();
+    assert!(
+        agenda["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["title"] == "All-day plan")
+    );
+}
+
+#[test]
+fn multiple_accounts_merge_and_filter_without_id_collisions() {
+    let harness = Harness::new();
+    harness.add_database_account("account-1");
+    harness
+        .database
+        .upsert_account("account-2", "google-subject-2", "work@example.com", "Work")
+        .unwrap();
+    harness
+        .secrets
+        .store("account-2", "refresh-token-never-cache")
+        .unwrap();
+
+    let refreshed = harness.service.refresh(&json!({})).unwrap();
+    assert_eq!(refreshed["accounts"].as_array().unwrap().len(), 2);
+    assert!(
+        refreshed["accounts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|account| account["ok"] == true)
+    );
+
+    let all = harness
+        .service
+        .agenda(&json!({"start": "2026-08-31", "end": "2026-09-01", "account": "all"}))
+        .unwrap();
+    let all_items = all["items"].as_array().unwrap();
+    assert_eq!(all_items.len(), 6);
+
+    let personal = harness
+        .service
+        .agenda(&json!({"start": "2026-08-31", "end": "2026-09-01", "account": "account-1"}))
+        .unwrap();
+    let work = harness
+        .service
+        .agenda(&json!({"start": "2026-08-31", "end": "2026-09-01", "account": "account-2"}))
+        .unwrap();
+    assert_eq!(personal["items"].as_array().unwrap().len(), 3);
+    assert_eq!(work["items"].as_array().unwrap().len(), 3);
+    assert!(
+        personal["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|item| item["accountId"] == "account-1")
+    );
+    assert!(
+        work["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|item| item["accountId"] == "account-2")
+    );
+
+    let shared_copies = all_items
+        .iter()
+        .filter(|item| item["icalUid"] == "shared@example.com")
+        .collect::<Vec<_>>();
+    assert_eq!(shared_copies.len(), 2);
+    assert_ne!(shared_copies[0]["id"], shared_copies[1]["id"]);
+}
+
+#[test]
+fn add_remove_keeps_secrets_outside_database() {
+    let harness = Harness::new();
+    let result = harness
+        .service
+        .add_account(&json!({"label": "Work"}))
+        .unwrap();
+    let account_id = result["account"]["id"].as_str().unwrap().to_owned();
+    assert_eq!(result["account"]["label"], "Work");
+    assert_eq!(
+        harness.secrets.values.lock().unwrap().get(&account_id),
+        Some(&"refresh-token-never-cache".into())
+    );
+    let database_bytes = fs::read(harness.database.path()).unwrap();
+    assert!(
+        !database_bytes
+            .windows(b"refresh-token-never-cache".len())
+            .any(|window| window == b"refresh-token-never-cache")
+    );
+    assert!(
+        !database_bytes
+            .windows(b"access-token-never-cache".len())
+            .any(|window| window == b"access-token-never-cache")
+    );
+
+    let removed = harness
+        .service
+        .remove_account(&json!({"accountId": account_id}))
+        .unwrap();
+    assert_eq!(removed["removed"], true);
+    assert_eq!(removed["revoked"], true);
+    assert_eq!(
+        *harness.google.revoked.lock().unwrap(),
+        vec!["refresh-token-never-cache"]
+    );
+    assert!(
+        !harness
+            .secrets
+            .values
+            .lock()
+            .unwrap()
+            .contains_key(&account_id)
+    );
+}
+
+#[test]
+fn newline_json_protocol_returns_empty_state() {
+    let harness = Harness::new();
+    let socket_path = harness
+        ._temporary
+        .path()
+        .join("runtime/omarchy-calendar.sock");
+    let server = Arc::new(CalendarServer::bind(&socket_path, harness.service).unwrap());
+    let server_thread = {
+        let server = server.clone();
+        thread::spawn(move || server.serve().unwrap())
+    };
+    let mut client = UnixStream::connect(&socket_path).unwrap();
+    client
+        .write_all(b"{\"id\":\"test-1\",\"method\":\"get_state\",\"params\":{}}\n")
+        .unwrap();
+    let mut line = String::new();
+    BufReader::new(client.try_clone().unwrap())
+        .read_line(&mut line)
+        .unwrap();
+    let response: Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(response["id"], "test-1");
+    assert_eq!(response["ok"], true);
+    assert_eq!(response["result"]["status"], "empty");
+    assert_eq!(response["result"]["accounts"], json!([]));
+    drop(client);
+    server.shutdown();
+    server_thread.join().unwrap();
+    server.cleanup();
+}

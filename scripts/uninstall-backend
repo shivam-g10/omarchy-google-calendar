@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+calendar_bin_path="${HOME}/.local/bin/omarchy-calendar"
+calendar_unit_path="${XDG_CONFIG_HOME:-${HOME}/.config}/systemd/user/omarchy-calendar.service"
+
+systemctl --user disable --now omarchy-calendar.service >/dev/null 2>&1 || true
+rm -f -- "${calendar_bin_path}" "${calendar_unit_path}"
+systemctl --user daemon-reload
+
+echo "Omarchy calendar backend removed. Account secrets and cached data were retained."

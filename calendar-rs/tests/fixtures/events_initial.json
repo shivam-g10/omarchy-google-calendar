@@ -1,0 +1,26 @@
+{
+  "items": [
+    {
+      "id": "event-1",
+      "iCalUID": "shared@example.com",
+      "summary": "Design review",
+      "location": "Meet",
+      "htmlLink": "https://calendar.google.com/calendar/event?eid=event-1",
+      "status": "confirmed",
+      "start": {"dateTime": "2026-08-31T10:00:00+05:30"},
+      "end": {"dateTime": "2026-08-31T11:00:00+05:30"},
+      "reminders": {"useDefault": true},
+      "updated": "2026-08-30T20:00:00Z"
+    },
+    {
+      "id": "event-2",
+      "iCalUID": "holiday@example.com",
+      "summary": "All-day plan",
+      "status": "confirmed",
+      "start": {"date": "2026-08-31"},
+      "end": {"date": "2026-09-01"},
+      "reminders": {"useDefault": false, "overrides": []}
+    }
+  ],
+  "nextSyncToken": "sync-1"
+}

@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "id": "shivam.clock",
+  "name": "Google Calendar",
+  "version": "1.2.0",
+  "author": "Shivam Mathur",
+  "description": "Multi-account Google Calendar and Tasks for the Omarchy bar",
+  "kinds": [
+    "service",
+    "bar-widget"
+  ],
+  "keepLoaded": true,
+  "entryPoints": {
+    "service": "CalendarService.qml",
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Google Calendar",
+    "description": "Date/time label with a multi-account calendar popup",
+    "category": "Time",
+    "allowMultiple": false
+  },
+  "omarchy": {
+    "clonedFrom": "omarchy.clock"
+  }
+}

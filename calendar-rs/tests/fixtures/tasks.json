@@ -1,0 +1,18 @@
+{
+  "items": [
+    {
+      "id": "task-1",
+      "title": "Send invoice",
+      "status": "needsAction",
+      "due": "2026-08-31T00:00:00.000Z",
+      "webViewLink": "https://tasks.google.com/task/task-1",
+      "updated": "2026-08-30T20:00:00Z"
+    },
+    {
+      "id": "task-complete",
+      "title": "Already done",
+      "status": "completed",
+      "due": "2026-08-31T00:00:00.000Z"
+    }
+  ]
+}

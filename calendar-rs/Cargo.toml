@@ -1,0 +1,30 @@
+[package]
+name = "omarchy-calendar"
+version = "1.2.0"
+edition = "2024"
+license = "MIT"
+description = "Native Google Calendar and Tasks backend for Omarchy"
+repository = "https://github.com/shivam-g10/omarchy-google-calendar"
+
+[dependencies]
+base64 = "0.23.1"
+chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
+libc = "0.2.177"
+percent-encoding = "2.3.2"
+rand = "0.8.5"
+rusqlite = "0.40.0"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.145"
+sha2 = "0.10.9"
+signal-hook = "0.3.18"
+ureq = { version = "3.4.0", default-features = false, features = ["json", "rustls", "rustls-webpki-roots"] }
+url = "2.5.7"
+uuid = { version = "1.18.1", features = ["v4"] }
+
+[dev-dependencies]
+tempfile = "3.23.0"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

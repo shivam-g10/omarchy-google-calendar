@@ -1,0 +1,19 @@
+{
+  "items": [
+    {
+      "id": "event-1",
+      "iCalUID": "shared@example.com",
+      "summary": "Design review moved",
+      "location": "Meet",
+      "htmlLink": "https://calendar.google.com/calendar/event?eid=event-1",
+      "status": "confirmed",
+      "originalStartTime": {"dateTime": "2026-08-31T10:00:00+05:30"},
+      "start": {"dateTime": "2026-08-31T10:30:00+05:30"},
+      "end": {"dateTime": "2026-08-31T11:30:00+05:30"},
+      "reminders": {"useDefault": false, "overrides": [{"method": "popup", "minutes": 5}]},
+      "updated": "2026-08-31T05:00:00Z"
+    },
+    {"id": "event-2", "status": "cancelled"}
+  ],
+  "nextSyncToken": "sync-2"
+}
