@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "shivam.clock",
   "name": "Google Calendar",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "author": "Shivam Mathur",
   "description": "Multi-account Google Calendar and Tasks for the Omarchy bar",
   "kinds": [

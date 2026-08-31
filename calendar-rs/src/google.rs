@@ -24,6 +24,7 @@ const OAUTH_TIMEOUT_SECONDS: u64 = 300;
 const MAX_GOOGLE_BODY: usize = 8 * 1024 * 1024;
 const MAX_GOOGLE_ERROR_BODY: usize = 256 * 1024;
 const MAX_CALLBACK_REQUEST: usize = 16 * 1024;
+const CALLBACK_COMPLETE_URL: &str = "https://github.com/shivam-g10/omarchy-google-calendar";
 const SCOPES: &[&str] = &[
     "openid",
     "email",
@@ -603,13 +604,10 @@ fn callback_request(stream: &mut TcpStream) -> Result<BTreeMap<String, String>> 
                 .or_insert_with(|| value.into_owned());
             output
         });
-    let body = b"<!doctype html><meta charset=utf-8><title>Omarchy Calendar</title><p>Google account connected. You may close this tab.</p>";
     let response = format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-        body.len()
+        "HTTP/1.1 303 See Other\r\nLocation: {CALLBACK_COMPLETE_URL}\r\nCache-Control: no-store\r\nReferrer-Policy: no-referrer\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
     );
     let _ = stream.write_all(response.as_bytes());
-    let _ = stream.write_all(body);
     Ok(values)
 }
 
@@ -721,6 +719,42 @@ mod tests {
         );
         assert!(!incremental.contains_key("timeMin"));
         assert!(!incremental.contains_key("timeMax"));
+    }
+
+    #[test]
+    fn callback_redirects_to_project_without_reflecting_oauth_values() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            callback_request(&mut stream).unwrap()
+        });
+
+        let mut client = TcpStream::connect(address).unwrap();
+        client
+            .write_all(
+                b"GET /callback?code=sensitive-code&state=sensitive-state HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n",
+            )
+            .unwrap();
+        let mut response = String::new();
+        client.read_to_string(&mut response).unwrap();
+
+        let values = server.join().unwrap();
+        assert_eq!(
+            values.get("code").map(String::as_str),
+            Some("sensitive-code")
+        );
+        assert_eq!(
+            values.get("state").map(String::as_str),
+            Some("sensitive-state")
+        );
+        assert!(response.starts_with("HTTP/1.1 303 See Other\r\n"));
+        assert!(response.contains(&format!("Location: {CALLBACK_COMPLETE_URL}\r\n")));
+        assert!(response.contains("Cache-Control: no-store\r\n"));
+        assert!(response.contains("Referrer-Policy: no-referrer\r\n"));
+        assert!(response.contains("Content-Length: 0\r\n"));
+        assert!(!response.contains("sensitive-code"));
+        assert!(!response.contains("sensitive-state"));
     }
 
     #[test]

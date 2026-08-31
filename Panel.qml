@@ -76,6 +76,7 @@ Panel {
     ? String(actualService.error || "")
     : ""
   readonly property bool backendConnected: !!actualService && actualService.connected === true
+  readonly property bool addingAccount: !!actualService && actualService.addingAccount === true
   readonly property bool serviceBusy: !!actualService
     && (actualService.refreshing === true || actualService.agendaLoading === true || serviceStatus === "syncing")
   readonly property string accountFilter: actualService && actualService.accountFilter !== undefined
@@ -155,7 +156,8 @@ Panel {
   }
 
   function addAccount() {
-    if (root.actualService && typeof root.actualService.addAccount === "function") root.actualService.addAccount()
+    if (!root.addingAccount && root.actualService && typeof root.actualService.addAccount === "function")
+      root.actualService.addAccount()
   }
 
   function removeSelectedAccount() {
@@ -180,6 +182,7 @@ Panel {
     var accountCount = root.serviceAccounts.length
     var prefix = accountCount + " account" + (accountCount === 1 ? "" : "s")
     if (!root.backendConnected || root.serviceStatus === "connecting") return prefix + " · connecting…"
+    if (root.addingAccount) return "Waiting for Google sign-in…"
     if (root.serviceStatus === "not_configured") return "Google OAuth setup needed"
     if (root.serviceStatus === "empty") return "No accounts connected"
     if (root.serviceBusy) return prefix + " · syncing…"
@@ -497,10 +500,10 @@ Panel {
 
               PanelActionButton {
                 iconText: "+"
-                tooltipText: "Add Google account"
+                tooltipText: root.addingAccount ? "Waiting for Google sign-in…" : "Add Google account"
                 foreground: root.contentForeground
                 fontFamily: root.contentFontFamily
-                enabled: root.backendConnected
+                enabled: root.backendConnected && !root.addingAccount
                 onClicked: root.addAccount()
               }
 

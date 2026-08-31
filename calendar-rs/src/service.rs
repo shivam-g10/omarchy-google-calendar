@@ -6,6 +6,7 @@ use std::env;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock, TryLockError};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -120,6 +121,7 @@ pub struct CalendarService {
     notifier: RwLock<Option<Notifier>>,
     syncing: Mutex<HashSet<String>>,
     refresh_lock: Mutex<()>,
+    oauth_in_progress: AtomicBool,
 }
 
 impl CalendarService {
@@ -135,6 +137,7 @@ impl CalendarService {
             notifier: RwLock::new(None),
             syncing: Mutex::new(HashSet::new()),
             refresh_lock: Mutex::new(()),
+            oauth_in_progress: AtomicBool::new(false),
         }
     }
 
@@ -169,6 +172,7 @@ impl CalendarService {
     }
 
     pub fn add_account(&self, parameters: &Value) -> Result<Value> {
+        let _oauth_guard = OAuthGuard::acquire(&self.oauth_in_progress)?;
         let authorization = self.google.authorize()?;
         let existing = self.database.account_by_sub(&authorization.subject)?;
         let account_id = existing
@@ -412,6 +416,27 @@ impl CalendarService {
         if let Some(notifier) = notifier {
             notifier(event, data);
         }
+    }
+}
+
+struct OAuthGuard<'a> {
+    in_progress: &'a AtomicBool,
+}
+
+impl<'a> OAuthGuard<'a> {
+    fn acquire(in_progress: &'a AtomicBool) -> Result<Self> {
+        in_progress
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .map_err(|_| {
+                CalendarError::new("oauth_in_progress", "Google sign-in is already in progress")
+            })?;
+        Ok(Self { in_progress })
+    }
+}
+
+impl Drop for OAuthGuard<'_> {
+    fn drop(&mut self) {
+        self.in_progress.store(false, Ordering::Release);
     }
 }
 

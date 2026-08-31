@@ -26,7 +26,9 @@ accounts. It does not create, edit, or delete cloud data.
 
 ## Connect accounts
 
-Open the calendar panel and click **+**. Google opens in your default browser.
+Open the calendar panel and click **+** once. Google opens in your existing
+default-browser session. The button stays disabled while sign-in is pending;
+after a successful callback, that tab continues to this project's GitHub page.
 Repeat for every account you want to combine.
 
 You can also connect an account from a terminal:

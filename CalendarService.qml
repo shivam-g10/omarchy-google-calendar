@@ -21,6 +21,7 @@ Item {
   property int socketErrorCode: -1
   property bool refreshing: false
   property bool agendaLoading: false
+  property bool addingAccount: false
 
   property var accounts: []
   property var items: []
@@ -187,7 +188,11 @@ Item {
   }
 
   function addAccount() {
-    return sendRequest("add_account", {}) !== ""
+    if (addingAccount) return false
+    var requestId = sendRequest("add_account", {})
+    if (requestId === "") return false
+    addingAccount = true
+    return true
   }
 
   function removeAccount(accountId) {
@@ -300,6 +305,7 @@ Item {
       var code = String(responseError.code || "request_failed")
       var text = String(responseError.message || "Calendar request failed")
       if (pending.method === "refresh") refreshing = false
+      if (pending.method === "add_account") addingAccount = false
       if (pending.method === "get_agenda" && String(message.id) === _activeAgendaRequestId) {
         agendaLoading = false
         _activeAgendaRequestId = ""
@@ -315,6 +321,7 @@ Item {
     } else if (pending.method === "get_agenda") {
       applyAgenda(result, pending, message.id)
     } else {
+      if (pending.method === "add_account") addingAccount = false
       if (pending.method === "refresh") {
         refreshing = false
         requestState()
@@ -359,6 +366,7 @@ Item {
     _activeAgendaRequestId = ""
     refreshing = false
     agendaLoading = false
+    addingAccount = false
   }
 
   function ensureConnected() {

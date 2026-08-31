@@ -8,8 +8,10 @@ use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixStream;
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
+use std::time::Duration;
 
 fn fixture(name: &str) -> Value {
     let content = match name {
@@ -63,6 +65,14 @@ struct FakeGoogle {
     sync_mode: Mutex<String>,
     seen_tokens: Mutex<Vec<Option<String>>>,
     revoked: Mutex<Vec<String>>,
+    authorize_calls: AtomicUsize,
+    authorization_gate: Mutex<Option<AuthorizationGate>>,
+    authorization_error: Mutex<Option<CalendarError>>,
+}
+
+struct AuthorizationGate {
+    started: mpsc::SyncSender<()>,
+    release: mpsc::Receiver<()>,
 }
 
 impl FakeGoogle {
@@ -76,7 +86,21 @@ impl FakeGoogle {
             sync_mode: Mutex::new("initial".into()),
             seen_tokens: Mutex::new(Vec::new()),
             revoked: Mutex::new(Vec::new()),
+            authorize_calls: AtomicUsize::new(0),
+            authorization_gate: Mutex::new(None),
+            authorization_error: Mutex::new(None),
         }
+    }
+
+    fn with_blocked_first_authorization() -> (Self, mpsc::Receiver<()>, mpsc::SyncSender<()>) {
+        let (started_sender, started_receiver) = mpsc::sync_channel(1);
+        let (release_sender, release_receiver) = mpsc::sync_channel(1);
+        let google = Self::new();
+        *google.authorization_gate.lock().unwrap() = Some(AuthorizationGate {
+            started: started_sender,
+            release: release_receiver,
+        });
+        (google, started_receiver, release_sender)
     }
 
     fn check_access(access_token: &str) -> Result<()> {
@@ -86,6 +110,13 @@ impl FakeGoogle {
             Err(CalendarError::new("test_error", "unexpected access token"))
         }
     }
+
+    fn fail_next_authorization(&self) {
+        *self.authorization_error.lock().unwrap() = Some(CalendarError::new(
+            "oauth_denied",
+            "Google sign-in was cancelled",
+        ));
+    }
 }
 
 impl GoogleApi for FakeGoogle {
@@ -94,6 +125,14 @@ impl GoogleApi for FakeGoogle {
     }
 
     fn authorize(&self) -> Result<AuthResult> {
+        self.authorize_calls.fetch_add(1, Ordering::SeqCst);
+        if let Some(gate) = self.authorization_gate.lock().unwrap().take() {
+            gate.started.send(()).unwrap();
+            gate.release.recv().unwrap();
+        }
+        if let Some(error) = self.authorization_error.lock().unwrap().take() {
+            return Err(error);
+        }
         Ok(AuthResult {
             refresh_token: "refresh-token-never-cache".into(),
             access_token: "access-token-never-cache".into(),
@@ -446,6 +485,55 @@ fn add_remove_keeps_secrets_outside_database() {
             .unwrap()
             .contains_key(&account_id)
     );
+}
+
+#[test]
+fn concurrent_add_account_is_rejected_and_guard_is_released() {
+    let temporary = tempfile::tempdir().unwrap();
+    let database = Arc::new(Database::new(temporary.path().join("state/agenda.db")).unwrap());
+    let (google, authorization_started, release_authorization) =
+        FakeGoogle::with_blocked_first_authorization();
+    let google = Arc::new(google);
+    let secrets = Arc::new(FakeSecrets::default());
+    let service = Arc::new(CalendarService::new(database, google.clone(), secrets));
+
+    let first_service = service.clone();
+    let first = thread::spawn(move || first_service.add_account(&json!({})));
+    authorization_started
+        .recv_timeout(Duration::from_secs(2))
+        .expect("first authorization did not start");
+
+    let concurrent = service.add_account(&json!({}));
+    release_authorization
+        .send(())
+        .expect("first authorization stopped waiting");
+    let first_result = first.join().expect("first add-account thread panicked");
+
+    let error = concurrent.expect_err("concurrent OAuth should be rejected");
+    assert_eq!(error.code, "oauth_in_progress");
+    assert_eq!(error.message, "Google sign-in is already in progress");
+    assert!(first_result.is_ok());
+    assert_eq!(google.authorize_calls.load(Ordering::SeqCst), 1);
+
+    let retry = service.add_account(&json!({}));
+    assert!(retry.is_ok());
+    assert_eq!(google.authorize_calls.load(Ordering::SeqCst), 2);
+}
+
+#[test]
+fn add_account_guard_is_released_after_authorization_failure() {
+    let harness = Harness::new();
+    harness.google.fail_next_authorization();
+
+    let error = harness
+        .service
+        .add_account(&json!({}))
+        .expect_err("first authorization should fail");
+    assert_eq!(error.code, "oauth_denied");
+
+    let retry = harness.service.add_account(&json!({}));
+    assert!(retry.is_ok());
+    assert_eq!(harness.google.authorize_calls.load(Ordering::SeqCst), 2);
 }
 
 #[test]
