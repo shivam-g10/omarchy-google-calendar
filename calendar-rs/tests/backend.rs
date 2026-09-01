@@ -1,6 +1,6 @@
 use omarchy_calendar::{
     AuthResult, CalendarEntry, CalendarError, CalendarServer, CalendarService, Database, GoogleApi,
-    Result, SecretStoreApi, TaskListEntry,
+    OAuthAttempt, OAuthPhase, Result, SecretStoreApi, TaskListEntry,
 };
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -124,14 +124,32 @@ impl GoogleApi for FakeGoogle {
         true
     }
 
-    fn authorize(&self) -> Result<AuthResult> {
+    fn authorize(&self, attempt: &OAuthAttempt) -> Result<AuthResult> {
         self.authorize_calls.fetch_add(1, Ordering::SeqCst);
         if let Some(gate) = self.authorization_gate.lock().unwrap().take() {
             gate.started.send(()).unwrap();
-            gate.release.recv().unwrap();
+            loop {
+                if attempt.phase() == OAuthPhase::Cancelled {
+                    return Err(CalendarError::new(
+                        "oauth_cancelled",
+                        "Google sign-in was cancelled",
+                    ));
+                }
+                match gate.release.recv_timeout(Duration::from_millis(10)) {
+                    Ok(()) => break,
+                    Err(mpsc::RecvTimeoutError::Timeout) => {}
+                    Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                }
+            }
         }
         if let Some(error) = self.authorization_error.lock().unwrap().take() {
             return Err(error);
+        }
+        if !attempt.begin_finishing() {
+            return Err(CalendarError::new(
+                "oauth_cancelled",
+                "Google sign-in was cancelled",
+            ));
         }
         Ok(AuthResult {
             refresh_token: "refresh-token-never-cache".into(),
@@ -521,6 +539,50 @@ fn concurrent_add_account_is_rejected_and_guard_is_released() {
 }
 
 #[test]
+fn abandoned_authorization_can_be_cancelled_and_retried() {
+    let temporary = tempfile::tempdir().unwrap();
+    let database = Arc::new(Database::new(temporary.path().join("state/agenda.db")).unwrap());
+    let (google, authorization_started, _release_authorization) =
+        FakeGoogle::with_blocked_first_authorization();
+    let google = Arc::new(google);
+    let secrets = Arc::new(FakeSecrets::default());
+    let service = Arc::new(CalendarService::new(database, google.clone(), secrets));
+
+    let first_service = service.clone();
+    let first = thread::spawn(move || first_service.add_account(&json!({})));
+    authorization_started
+        .recv_timeout(Duration::from_secs(2))
+        .expect("authorization did not start");
+
+    let waiting = service.state().unwrap();
+    assert_eq!(waiting["oauthInProgress"], true);
+    assert_eq!(waiting["oauthCancelable"], true);
+    let cancelled = service.cancel_add_account().unwrap();
+    assert_eq!(cancelled["cancelled"], true);
+
+    let error = first
+        .join()
+        .expect("add-account thread panicked")
+        .expect_err("cancelled OAuth should fail");
+    assert_eq!(error.code, "oauth_cancelled");
+    let idle = service.state().unwrap();
+    assert_eq!(idle["oauthInProgress"], false);
+    assert_eq!(idle["oauthCancelable"], false);
+
+    let retry = service.add_account(&json!({}));
+    assert!(retry.is_ok());
+    assert_eq!(google.authorize_calls.load(Ordering::SeqCst), 2);
+}
+
+#[test]
+fn cancelling_without_active_authorization_is_idempotent() {
+    let harness = Harness::new();
+    let result = harness.service.cancel_add_account().unwrap();
+    assert_eq!(result["cancelled"], false);
+    assert_eq!(result["reason"], "not_in_progress");
+}
+
+#[test]
 fn add_account_guard_is_released_after_authorization_failure() {
     let harness = Harness::new();
     harness.google.fail_next_authorization();
@@ -561,6 +623,61 @@ fn newline_json_protocol_returns_empty_state() {
     assert_eq!(response["ok"], true);
     assert_eq!(response["result"]["status"], "empty");
     assert_eq!(response["result"]["accounts"], json!([]));
+    drop(client);
+    server.shutdown();
+    server_thread.join().unwrap();
+    server.cleanup();
+}
+
+#[test]
+fn same_socket_cancel_interrupts_blocked_add_account() {
+    let temporary = tempfile::tempdir().unwrap();
+    let database = Arc::new(Database::new(temporary.path().join("state/agenda.db")).unwrap());
+    let (google, authorization_started, _release_authorization) =
+        FakeGoogle::with_blocked_first_authorization();
+    let service = Arc::new(CalendarService::new(
+        database,
+        Arc::new(google),
+        Arc::new(FakeSecrets::default()),
+    ));
+    let socket_path = temporary.path().join("runtime/omarchy-calendar.sock");
+    let server = Arc::new(CalendarServer::bind(&socket_path, service).unwrap());
+    let server_thread = {
+        let server = server.clone();
+        thread::spawn(move || server.serve().unwrap())
+    };
+    let mut client = UnixStream::connect(&socket_path).unwrap();
+    client
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    client
+        .write_all(b"{\"id\":\"add\",\"method\":\"add_account\",\"params\":{}}\n")
+        .unwrap();
+    client.flush().unwrap();
+    authorization_started
+        .recv_timeout(Duration::from_secs(2))
+        .expect("authorization did not start");
+    client
+        .write_all(b"{\"id\":\"cancel\",\"method\":\"cancel_add_account\",\"params\":{}}\n")
+        .unwrap();
+    client.flush().unwrap();
+
+    let mut reader = BufReader::new(client.try_clone().unwrap());
+    let mut responses = HashMap::new();
+    while responses.len() < 2 {
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        let message: Value = serde_json::from_str(&line).unwrap();
+        if let Some(id) = message.get("id").and_then(Value::as_str) {
+            responses.insert(id.to_owned(), message);
+        }
+    }
+    assert_eq!(responses["cancel"]["ok"], true);
+    assert_eq!(responses["cancel"]["result"]["cancelled"], true);
+    assert_eq!(responses["add"]["ok"], false);
+    assert_eq!(responses["add"]["error"]["code"], "oauth_cancelled");
+
+    drop(reader);
     drop(client);
     server.shutdown();
     server_thread.join().unwrap();

@@ -14,6 +14,9 @@ opens a unified calendar when clicked.
 - Connects accounts through browser-based OAuth with PKCE and state validation.
 - Reuses Omarchy's existing `brave-bin` session through its verified local handoff socket and
   prevents duplicate sign-in windows.
+- Uses the desktop's normal URL launcher for Firefox, Chrome, Chromium, and other defaults.
+- Opens from cached agenda data immediately; network sync runs in the background or on demand.
+- Lets an abandoned Google sign-in be cancelled immediately with the **×** action.
 - Stores refresh tokens in Secret Service, not in the plugin or SQLite cache.
 - Uses a native Rust service with incremental calendar sync and expired
   sync-token recovery.
@@ -89,7 +92,7 @@ cargo clippy --locked --all-targets --manifest-path calendar-rs/Cargo.toml -- -D
 
 The local backend protocol is newline-delimited JSON over a private Unix
 socket. Its supported methods are `get_state`, `get_agenda`, `refresh`,
-`add_account`, `remove_account`, and `open_item`.
+`add_account`, `cancel_add_account`, `remove_account`, and `open_item`.
 
 ## License
 

@@ -41,6 +41,12 @@ BarWidget {
     if (panelLoader.item && panelLoader.item.refresh) panelLoader.item.refresh()
   }
 
+  function syncCalendars() {
+    displayDate = new Date()
+    if (panelLoader.item && panelLoader.item.refreshFromGoogle)
+      panelLoader.item.refreshFromGoogle()
+  }
+
   function cycleFormat() {
     var current = String(configuredFormat)
     var next = Model.nextClockFormat(formatRing, current)
@@ -140,7 +146,7 @@ BarWidget {
   IpcHandler {
     target: root.moduleName
 
-    function refresh(): void { root.broadcast("refresh") }
+    function refresh(): void { root.broadcast("syncCalendars") }
     function cycleFormat(): void { root.cycleFormat() }
     function toggleWeekStart(): void { root.toggleWeekStart() }
     function open(): void { root.open() }

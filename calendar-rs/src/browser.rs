@@ -15,7 +15,7 @@ use url::Url;
 const BRAVE_EXECUTABLE: &str = "/opt/brave-bin/brave";
 const CHROMIUM_SINGLETON_LIMIT: usize = 32 * 1024;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
-const ACK_TIMEOUT: Duration = Duration::from_secs(20);
+const ACK_TIMEOUT: Duration = Duration::from_secs(2);
 const DEFAULT_BROWSER_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -112,8 +112,7 @@ fn open_with_backend(url: &str, backend: &impl BrowserBackend) -> BrowserOpenRes
         return BrowserOpenResult::Failed;
     }
     match backend.default_browser() {
-        DefaultBrowser::Other => opened(backend.launch_default(url)),
-        DefaultBrowser::Unknown => BrowserOpenResult::Failed,
+        DefaultBrowser::Other | DefaultBrowser::Unknown => opened(backend.launch_default(url)),
         DefaultBrowser::Brave => match backend.discover_brave() {
             BraveDiscovery::None => opened(backend.launch_default(url)),
             BraveDiscovery::Target(target) => {
@@ -188,8 +187,8 @@ fn query_default_browser() -> DefaultBrowser {
 }
 
 fn classify_default_browser(value: &str) -> DefaultBrowser {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "brave-browser.desktop" | "com.brave.browser.desktop" => DefaultBrowser::Brave,
+    match value.trim() {
+        "brave-browser.desktop" => DefaultBrowser::Brave,
         "" => DefaultBrowser::Unknown,
         _ => DefaultBrowser::Other,
     }
@@ -273,47 +272,42 @@ fn inspect_brave_executable(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return ProcessInspection::NotBrave;
         }
-        Err(_) => return ProcessInspection::Unsafe,
+        Err(_) => return process_inspection_failed(pid, "metadata"),
     };
     if metadata.uid() != uid {
         return ProcessInspection::NotBrave;
     }
-    let actual_executable = match fs::read_link(process_dir.join("exe")) {
-        Ok(path) => path,
-        Err(_) if !process_dir.exists() => return ProcessInspection::NotBrave,
-        Err(_) => {
-            return match fs::read_to_string(process_dir.join("status")) {
-                Ok(status) if process_name(&status) == Some("brave") => ProcessInspection::Unsafe,
-                Ok(_) => ProcessInspection::NotBrave,
-                Err(_) if !process_dir.exists() => ProcessInspection::NotBrave,
-                Err(_) => ProcessInspection::Unsafe,
-            };
-        }
-    };
-    if actual_executable != executable {
-        return if deleted_executable_matches(&actual_executable, executable)
-            || actual_executable.file_name() == Some(OsStr::new("brave"))
-            || actual_executable.file_name() == Some(OsStr::new("brave (deleted)"))
-            || fs::read_to_string(process_dir.join("status"))
-                .ok()
-                .and_then(|status| process_name(&status).map(str::to_owned))
-                .as_deref()
-                == Some("brave")
-        {
-            ProcessInspection::Unsafe
-        } else {
-            ProcessInspection::NotBrave
-        };
-    }
     let status = match fs::read_to_string(process_dir.join("status")) {
         Ok(status) => status,
-        Err(_) if !process_dir.exists() => return ProcessInspection::NotBrave,
-        Err(_) => return ProcessInspection::Unsafe,
+        Err(_) => return ProcessInspection::NotBrave,
     };
+    if process_name(&status) != Some("brave") {
+        return ProcessInspection::NotBrave;
+    }
+    match process_state(&status) {
+        Some('Z') => return ProcessInspection::NotBrave,
+        Some(_) => {}
+        None => return process_inspection_failed(pid, "state"),
+    }
     if process_effective_uid(&status) != Some(uid) {
-        return ProcessInspection::Unsafe;
+        return process_inspection_failed(pid, "effective_uid");
+    }
+    let actual_executable = match fs::read_link(process_dir.join("exe")) {
+        Ok(path) => path,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return ProcessInspection::NotBrave;
+        }
+        Err(_) => return process_inspection_failed(pid, "executable_unreadable"),
+    };
+    if actual_executable != executable {
+        return process_inspection_failed(pid, "executable_mismatch");
     }
     ProcessInspection::Brave
+}
+
+fn process_inspection_failed(pid: libc::pid_t, reason: &str) -> ProcessInspection {
+    eprintln!("omarchy-calendar: rejected process {pid} during Brave discovery: {reason}");
+    ProcessInspection::Unsafe
 }
 
 fn parse_pid(value: &OsStr) -> Option<libc::pid_t> {
@@ -336,12 +330,11 @@ fn process_name(status: &str) -> Option<&str> {
         .map(str::trim)
 }
 
-fn deleted_executable_matches(actual: &Path, expected: &Path) -> bool {
-    let actual = actual.as_os_str().as_bytes();
-    let expected = expected.as_os_str().as_bytes();
-    actual
-        .strip_prefix(expected)
-        .is_some_and(|suffix| suffix == b" (deleted)")
+fn process_state(status: &str) -> Option<char> {
+    status
+        .lines()
+        .find_map(|line| line.strip_prefix("State:"))
+        .and_then(|value| value.trim_start().chars().next())
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -910,6 +903,7 @@ mod tests {
         discovery: BraveDiscovery,
         handoff_success: bool,
         launch_success: bool,
+        discoveries: Cell<usize>,
         handoffs: Cell<usize>,
         launches: Cell<usize>,
     }
@@ -920,6 +914,7 @@ mod tests {
         }
 
         fn discover_brave(&self) -> BraveDiscovery {
+            self.discoveries.set(self.discoveries.get() + 1);
             self.discovery.clone()
         }
 
@@ -950,26 +945,54 @@ mod tests {
             discovery,
             handoff_success: false,
             launch_success: true,
+            discoveries: Cell::new(0),
             handoffs: Cell::new(0),
             launches: Cell::new(0),
         }
     }
 
     #[test]
-    fn classifies_supported_brave_desktop_ids() {
+    fn only_native_brave_desktop_id_uses_direct_handoff() {
         assert_eq!(
             classify_default_browser("brave-browser.desktop\n"),
             DefaultBrowser::Brave
         );
         assert_eq!(
             classify_default_browser("com.brave.Browser.desktop"),
-            DefaultBrowser::Brave
+            DefaultBrowser::Other
         );
         assert_eq!(
-            classify_default_browser("firefox.desktop"),
+            classify_default_browser("brave-browser-beta.desktop"),
+            DefaultBrowser::Other
+        );
+        assert_eq!(
+            classify_default_browser("Brave-Browser.desktop"),
             DefaultBrowser::Other
         );
         assert_eq!(classify_default_browser(""), DefaultBrowser::Unknown);
+    }
+
+    #[test]
+    fn non_native_browser_ids_use_default_launcher() {
+        for desktop_id in [
+            "firefox.desktop",
+            "google-chrome.desktop",
+            "chromium.desktop",
+            "com.brave.Browser.desktop",
+        ] {
+            let backend = FakeBackend {
+                default: classify_default_browser(desktop_id),
+                ..fake_backend(BraveDiscovery::Unsafe)
+            };
+            assert_eq!(
+                open_with_backend("https://accounts.google.com/authorize", &backend),
+                BrowserOpenResult::Opened,
+                "{desktop_id}"
+            );
+            assert_eq!(backend.discoveries.get(), 0, "{desktop_id}");
+            assert_eq!(backend.handoffs.get(), 0, "{desktop_id}");
+            assert_eq!(backend.launches.get(), 1, "{desktop_id}");
+        }
     }
 
     #[test]
@@ -1010,6 +1033,21 @@ mod tests {
         );
         assert_eq!(other.launches.get(), 1);
         assert_eq!(other.handoffs.get(), 0);
+    }
+
+    #[test]
+    fn unknown_default_uses_fallback() {
+        let backend = FakeBackend {
+            default: DefaultBrowser::Unknown,
+            ..fake_backend(BraveDiscovery::Unsafe)
+        };
+        assert_eq!(
+            open_with_backend("https://accounts.google.com/authorize", &backend),
+            BrowserOpenResult::Opened
+        );
+        assert_eq!(backend.discoveries.get(), 0);
+        assert_eq!(backend.launches.get(), 1);
+        assert_eq!(backend.handoffs.get(), 0);
     }
 
     #[test]
@@ -1252,7 +1290,7 @@ mod tests {
     }
 
     #[test]
-    fn deleted_or_unreadable_brave_executable_fails_closed() {
+    fn deleted_or_mismatched_brave_executable_fails_closed() {
         let temporary = tempfile::tempdir().unwrap();
         let proc_root = temporary.path().join("proc");
         fs::create_dir(&proc_root).unwrap();
@@ -1277,9 +1315,80 @@ mod tests {
         fs::remove_dir_all(proc_root.join("30")).unwrap();
         create_fake_brave_process(&proc_root, 31, uid, 1, false);
         fs::remove_file(proc_root.join("31/exe")).unwrap();
+        symlink("/tmp/not-the-brave-executable", proc_root.join("31/exe")).unwrap();
         assert_eq!(
             discover_brave(&layout, uid, Path::new(BRAVE_EXECUTABLE)),
             BraveDiscovery::Unsafe
+        );
+    }
+
+    #[test]
+    fn non_zombie_brave_whose_executable_vanished_is_ignored() {
+        let temporary = tempfile::tempdir().unwrap();
+        let proc_root = temporary.path().join("proc");
+        fs::create_dir(&proc_root).unwrap();
+        // SAFETY: geteuid has no preconditions and does not dereference memory.
+        let uid = unsafe { libc::geteuid() };
+        create_fake_brave_process(&proc_root, 35, uid, 1, false);
+        fs::remove_file(proc_root.join("35/exe")).unwrap();
+        let layout = ProcLayout {
+            root: proc_root,
+            net_unix: temporary.path().join("unix"),
+        };
+        assert_eq!(
+            discover_brave(&layout, uid, Path::new(BRAVE_EXECUTABLE)),
+            BraveDiscovery::None
+        );
+    }
+
+    #[test]
+    fn zombie_brave_without_executable_is_ignored() {
+        let temporary = tempfile::tempdir().unwrap();
+        let proc_root = temporary.path().join("proc");
+        fs::create_dir(&proc_root).unwrap();
+        // SAFETY: geteuid has no preconditions and does not dereference memory.
+        let uid = unsafe { libc::geteuid() };
+        create_fake_brave_process(&proc_root, 32, uid, 1, false);
+        fs::remove_file(proc_root.join("32/exe")).unwrap();
+        fs::write(
+            proc_root.join("32/status"),
+            format!("Name:\tbrave\nState:\tZ (zombie)\nUid:\t{uid}\t{uid}\t{uid}\t{uid}\n"),
+        )
+        .unwrap();
+        let layout = ProcLayout {
+            root: proc_root,
+            net_unix: temporary.path().join("unix"),
+        };
+        assert_eq!(
+            discover_brave(&layout, uid, Path::new(BRAVE_EXECUTABLE)),
+            BraveDiscovery::None
+        );
+    }
+
+    #[test]
+    fn unrelated_same_uid_process_races_are_ignored() {
+        let temporary = tempfile::tempdir().unwrap();
+        let proc_root = temporary.path().join("proc");
+        fs::create_dir(&proc_root).unwrap();
+        // SAFETY: geteuid has no preconditions and does not dereference memory.
+        let uid = unsafe { libc::geteuid() };
+
+        let unrelated = proc_root.join("33");
+        fs::create_dir(&unrelated).unwrap();
+        fs::write(
+            unrelated.join("status"),
+            format!("Name:\tshort-lived\nState:\tS (sleeping)\nUid:\t{uid}\t{uid}\t{uid}\t{uid}\n"),
+        )
+        .unwrap();
+        fs::create_dir(proc_root.join("34")).unwrap();
+
+        let layout = ProcLayout {
+            root: proc_root,
+            net_unix: temporary.path().join("unix"),
+        };
+        assert_eq!(
+            discover_brave(&layout, uid, Path::new(BRAVE_EXECUTABLE)),
+            BraveDiscovery::None
         );
     }
 
@@ -1488,7 +1597,7 @@ mod tests {
         symlink(format!("socket:[{inode}]"), process.join("fd/15")).unwrap();
         fs::write(
             process.join("status"),
-            format!("Name:\tbrave\nUid:\t{uid}\t{uid}\t{uid}\t{uid}\n"),
+            format!("Name:\tbrave\nState:\tS (sleeping)\nUid:\t{uid}\t{uid}\t{uid}\t{uid}\n"),
         )
         .unwrap();
         let command_line = if child {

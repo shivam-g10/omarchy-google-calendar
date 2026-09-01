@@ -64,12 +64,13 @@ fn help(command: Option<&str>) {
         Some("status") => "status",
         Some("list") => "list [--start DATE] [--end DATE] [--account ID]",
         Some("add") => "add [--label LABEL]",
+        Some("cancel") => "cancel",
         Some("remove") => "remove ACCOUNT_ID",
         Some("refresh") => "refresh [--account ID]",
         Some("open") => "open ITEM_ID",
         _ => {
             println!(
-                "Omarchy calendar backend\n\nCommands:\n  daemon\n  status\n  list [--start DATE] [--end DATE] [--account ID]\n  add [--label LABEL]\n  remove ACCOUNT_ID\n  refresh [--account ID]\n  open ITEM_ID"
+                "Omarchy calendar backend\n\nCommands:\n  daemon\n  status\n  list [--start DATE] [--end DATE] [--account ID]\n  add [--label LABEL]\n  cancel\n  remove ACCOUNT_ID\n  refresh [--account ID]\n  open ITEM_ID"
             );
             return;
         }
@@ -136,6 +137,10 @@ fn command() -> Result<Value, CalendarError> {
                 parameters.insert("label".into(), Value::String(label.clone()));
             }
             send_request(&socket_path, "add_account", Value::Object(parameters))
+        }
+        "cancel" => {
+            require_positionals(&parse_tail(&arguments, &[])?, 0, "omarchy-calendar cancel")?;
+            send_request(&socket_path, "cancel_add_account", json!({}))
         }
         "remove" => {
             let parsed = parse_tail(&arguments, &[])?;

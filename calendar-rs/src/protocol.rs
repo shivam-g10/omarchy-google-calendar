@@ -237,12 +237,31 @@ fn handle_client(stream: UnixStream, service: Arc<CalendarService>, hub: Arc<Cli
             Ok(LineRead::Line(line)) => line,
             Err(_) => break,
         };
-        let response = dispatch_line(&line, &service);
-        if writer.send(&response).is_err() {
-            break;
+        let request_id = request_id_from_line(&line);
+        let request_service = Arc::clone(&service);
+        let request_writer = Arc::clone(&writer);
+        if thread::Builder::new()
+            .name("calendar-request".into())
+            .spawn(move || {
+                let response = dispatch_line(&line, &request_service);
+                let _ = request_writer.send(&response);
+            })
+            .is_err()
+        {
+            let error = CalendarError::new("internal_error", "Could not start calendar request");
+            if writer.send(&error.response(request_id)).is_err() {
+                break;
+            }
         }
     }
     hub.unregister(client_id);
+}
+
+fn request_id_from_line(line: &[u8]) -> Value {
+    serde_json::from_slice::<Value>(line)
+        .ok()
+        .and_then(|request| request.get("id").cloned())
+        .unwrap_or(Value::Null)
 }
 
 fn dispatch_line(line: &[u8], service: &CalendarService) -> Value {

@@ -1,5 +1,5 @@
 use crate::browser::{BrowserOpenResult, open_browser};
-use crate::{CalendarError, Database, GoogleApi, Result, safe_message};
+use crate::{CalendarError, Database, GoogleApi, OAuthAttempt, OAuthPhase, Result, safe_message};
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
@@ -7,7 +7,6 @@ use std::env;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock, TryLockError};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -122,7 +121,7 @@ pub struct CalendarService {
     notifier: RwLock<Option<Notifier>>,
     syncing: Mutex<HashSet<String>>,
     refresh_lock: Mutex<()>,
-    oauth_in_progress: AtomicBool,
+    oauth_attempt: Mutex<Option<Arc<OAuthAttempt>>>,
 }
 
 impl CalendarService {
@@ -138,7 +137,7 @@ impl CalendarService {
             notifier: RwLock::new(None),
             syncing: Mutex::new(HashSet::new()),
             refresh_lock: Mutex::new(()),
-            oauth_in_progress: AtomicBool::new(false),
+            oauth_attempt: Mutex::new(None),
         }
     }
 
@@ -148,7 +147,29 @@ impl CalendarService {
 
     pub fn state(&self) -> Result<Value> {
         let syncing = self.syncing.lock().expect("sync state poisoned").clone();
-        self.database.state(&syncing, self.google.configured())
+        let mut state = self.database.state(&syncing, self.google.configured())?;
+        let phase = self
+            .oauth_attempt
+            .lock()
+            .expect("OAuth state poisoned")
+            .as_ref()
+            .map(|attempt| attempt.phase());
+        if let Some(object) = state.as_object_mut() {
+            object.insert("oauthInProgress".into(), json!(phase.is_some()));
+            object.insert(
+                "oauthCancelable".into(),
+                json!(phase == Some(OAuthPhase::Waiting)),
+            );
+            object.insert(
+                "oauthCancelling".into(),
+                json!(phase == Some(OAuthPhase::Cancelled)),
+            );
+            object.insert(
+                "oauthFinishing".into(),
+                json!(phase == Some(OAuthPhase::Finishing)),
+            );
+        }
+        Ok(state)
     }
 
     pub fn agenda(&self, parameters: &Value) -> Result<Value> {
@@ -173,8 +194,21 @@ impl CalendarService {
     }
 
     pub fn add_account(&self, parameters: &Value) -> Result<Value> {
-        let _oauth_guard = OAuthGuard::acquire(&self.oauth_in_progress)?;
-        let authorization = self.google.authorize()?;
+        let oauth_guard = OAuthGuard::acquire(self)?;
+        self.notify_state();
+        let result = self.add_account_inner(parameters, oauth_guard.attempt());
+        drop(oauth_guard);
+        result
+    }
+
+    fn add_account_inner(&self, parameters: &Value, attempt: &OAuthAttempt) -> Result<Value> {
+        let authorization = self.google.authorize(attempt)?;
+        if !attempt.begin_finishing() {
+            return Err(CalendarError::new(
+                "oauth_cancelled",
+                "Google sign-in was cancelled",
+            ));
+        }
         let existing = self.database.account_by_sub(&authorization.subject)?;
         let account_id = existing
             .as_ref()
@@ -209,6 +243,29 @@ impl CalendarService {
             .cloned()
             .ok_or_else(|| CalendarError::new("internal_error", "Connected account disappeared"))?;
         Ok(json!({"account": account, "sync": sync}))
+    }
+
+    pub fn cancel_add_account(&self) -> Result<Value> {
+        let attempt = self
+            .oauth_attempt
+            .lock()
+            .expect("OAuth state poisoned")
+            .clone();
+        let Some(attempt) = attempt else {
+            return Ok(json!({"cancelled": false, "reason": "not_in_progress"}));
+        };
+        if attempt.cancel() {
+            self.notify_state();
+            return Ok(json!({"cancelled": true}));
+        }
+        match attempt.phase() {
+            OAuthPhase::Cancelled => Ok(json!({"cancelled": true, "reason": "already_cancelled"})),
+            OAuthPhase::Finishing => {
+                self.notify_state();
+                Ok(json!({"cancelled": false, "reason": "finishing"}))
+            }
+            OAuthPhase::Waiting => Ok(json!({"cancelled": false, "reason": "try_again"})),
+        }
     }
 
     pub fn remove_account(&self, parameters: &Value) -> Result<Value> {
@@ -398,6 +455,7 @@ impl CalendarService {
             "get_agenda" | "list_agenda" => self.agenda(parameters),
             "refresh" => self.refresh(parameters),
             "add_account" | "add" => self.add_account(parameters),
+            "cancel_add_account" | "cancel" => self.cancel_add_account(),
             "remove_account" | "remove" => self.remove_account(parameters),
             "open_item" => self.open_item(parameters),
             _ => Err(CalendarError::new(
@@ -430,23 +488,50 @@ impl CalendarService {
 }
 
 struct OAuthGuard<'a> {
-    in_progress: &'a AtomicBool,
+    service: &'a CalendarService,
+    attempt: Arc<OAuthAttempt>,
 }
 
 impl<'a> OAuthGuard<'a> {
-    fn acquire(in_progress: &'a AtomicBool) -> Result<Self> {
-        in_progress
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .map_err(|_| {
-                CalendarError::new("oauth_in_progress", "Google sign-in is already in progress")
-            })?;
-        Ok(Self { in_progress })
+    fn acquire(service: &'a CalendarService) -> Result<Self> {
+        let mut current = service.oauth_attempt.lock().expect("OAuth state poisoned");
+        if current.is_some() {
+            return Err(CalendarError::new(
+                "oauth_in_progress",
+                "Google sign-in is already in progress",
+            ));
+        }
+        let attempt = Arc::new(OAuthAttempt::new());
+        *current = Some(Arc::clone(&attempt));
+        Ok(Self { service, attempt })
+    }
+
+    fn attempt(&self) -> &OAuthAttempt {
+        &self.attempt
     }
 }
 
 impl Drop for OAuthGuard<'_> {
     fn drop(&mut self) {
-        self.in_progress.store(false, Ordering::Release);
+        let removed = {
+            let mut current = self
+                .service
+                .oauth_attempt
+                .lock()
+                .expect("OAuth state poisoned");
+            if current
+                .as_ref()
+                .is_some_and(|attempt| Arc::ptr_eq(attempt, &self.attempt))
+            {
+                *current = None;
+                true
+            } else {
+                false
+            }
+        };
+        if removed {
+            self.service.notify_state();
+        }
     }
 }
 

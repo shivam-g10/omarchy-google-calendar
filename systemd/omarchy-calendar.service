@@ -10,12 +10,12 @@ Restart=on-failure
 RestartSec=2
 UMask=0077
 NoNewPrivileges=true
-ProtectSystem=full
-ProtectKernelTunables=true
-ProtectKernelModules=true
-ProtectControlGroups=true
 RestrictSUIDSGID=true
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+# Filesystem namespace hardening is intentionally omitted. A separate mount
+# namespace makes Linux deny the read-only /proc/<pid>/{exe,fd} checks used to
+# authenticate Brave's singleton socket. The user service has no elevated
+# privileges and retains the restrictions above.
 
 [Install]
 WantedBy=graphical-session.target

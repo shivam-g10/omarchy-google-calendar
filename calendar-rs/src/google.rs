@@ -1,5 +1,8 @@
 use crate::browser::{BrowserOpenResult, open_browser};
-use crate::{AuthResult, CalendarEntry, CalendarError, Result, TaskListEntry, safe_message};
+use crate::{
+    AuthResult, CalendarEntry, CalendarError, OAuthAttempt, OAuthPhase, Result, TaskListEntry,
+    safe_message,
+};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chrono::{DateTime, Duration as ChronoDuration, SecondsFormat, Utc};
@@ -35,7 +38,7 @@ const SCOPES: &[&str] = &[
 
 pub trait GoogleApi: Send + Sync {
     fn configured(&self) -> bool;
-    fn authorize(&self) -> Result<AuthResult>;
+    fn authorize(&self, attempt: &OAuthAttempt) -> Result<AuthResult>;
     fn refresh_access_token(&self, refresh_token: &str) -> Result<String>;
     fn revoke(&self, refresh_token: &str) -> bool;
     fn list_calendars(&self, access_token: &str) -> Result<Vec<CalendarEntry>>;
@@ -251,7 +254,10 @@ impl GoogleApi for GoogleClient {
         self.client_path.is_file()
     }
 
-    fn authorize(&self) -> Result<AuthResult> {
+    fn authorize(&self, attempt: &OAuthAttempt) -> Result<AuthResult> {
+        if attempt.phase() == OAuthPhase::Cancelled {
+            return Err(oauth_cancelled());
+        }
         let client = self.client()?;
         let state = random_base64(32);
         let verifier = random_base64(64);
@@ -305,8 +311,15 @@ impl GoogleApi for GoogleClient {
                 ));
             }
         }
-        let values = receive_callback(&listener, Duration::from_secs(OAUTH_TIMEOUT_SECONDS))?
-            .ok_or_else(|| CalendarError::new("oauth_timeout", "Google sign-in timed out"))?;
+        if attempt.phase() == OAuthPhase::Cancelled {
+            return Err(oauth_cancelled());
+        }
+        let values = receive_callback(
+            &listener,
+            Duration::from_secs(OAUTH_TIMEOUT_SECONDS),
+            attempt,
+        )?
+        .ok_or_else(|| CalendarError::new("oauth_timeout", "Google sign-in timed out"))?;
         let returned_state = values.get("state").map(String::as_str).unwrap_or("");
         if Sha256::digest(returned_state.as_bytes()) != Sha256::digest(state.as_bytes()) {
             return Err(CalendarError::new(
@@ -329,6 +342,9 @@ impl GoogleApi for GoogleClient {
                     "Google sign-in returned no authorization code",
                 )
             })?;
+        if !attempt.begin_finishing() {
+            return Err(oauth_cancelled());
+        }
         let mut form = BTreeMap::from([
             ("client_id".into(), client.client_id.clone()),
             ("code".into(), code.clone()),
@@ -537,9 +553,13 @@ impl GoogleApi for GoogleClient {
 fn receive_callback(
     listener: &TcpListener,
     timeout: Duration,
+    attempt: &OAuthAttempt,
 ) -> Result<Option<BTreeMap<String, String>>> {
     let deadline = Instant::now() + timeout;
     loop {
+        if attempt.phase() == OAuthPhase::Cancelled {
+            return Err(oauth_cancelled());
+        }
         match listener.accept() {
             Ok((mut stream, _)) => {
                 stream.set_read_timeout(Some(Duration::from_secs(5))).ok();
@@ -559,6 +579,10 @@ fn receive_callback(
             }
         }
     }
+}
+
+fn oauth_cancelled() -> CalendarError {
+    CalendarError::new("oauth_cancelled", "Google sign-in was cancelled")
 }
 
 fn callback_request(stream: &mut TcpStream) -> Result<BTreeMap<String, String>> {
@@ -746,6 +770,25 @@ mod tests {
         assert!(response.contains("Content-Length: 0\r\n"));
         assert!(!response.contains("sensitive-code"));
         assert!(!response.contains("sensitive-state"));
+    }
+
+    #[test]
+    fn callback_wait_stops_when_authorization_is_cancelled() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let attempt = Arc::new(OAuthAttempt::new());
+        let waiting_attempt = Arc::clone(&attempt);
+        let waiter = thread::spawn(move || {
+            receive_callback(&listener, Duration::from_secs(2), &waiting_attempt)
+        });
+
+        thread::sleep(Duration::from_millis(25));
+        assert!(attempt.cancel());
+        let error = waiter
+            .join()
+            .expect("callback waiter panicked")
+            .expect_err("cancelled callback should fail");
+        assert_eq!(error.code, "oauth_cancelled");
     }
 
     #[test]

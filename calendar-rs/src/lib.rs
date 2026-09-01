@@ -11,10 +11,73 @@ pub use service::{CalendarService, SecretStore, SecretStoreApi};
 
 use serde_json::Value;
 use std::fmt;
+use std::sync::atomic::{AtomicU8, Ordering};
 
 pub const MAX_MESSAGE_BYTES: usize = 1024 * 1024;
 
 pub type Result<T> = std::result::Result<T, CalendarError>;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OAuthPhase {
+    Waiting,
+    Cancelled,
+    Finishing,
+}
+
+#[derive(Debug)]
+pub struct OAuthAttempt {
+    phase: AtomicU8,
+}
+
+impl OAuthAttempt {
+    const WAITING: u8 = 0;
+    const CANCELLED: u8 = 1;
+    const FINISHING: u8 = 2;
+
+    pub fn new() -> Self {
+        Self {
+            phase: AtomicU8::new(Self::WAITING),
+        }
+    }
+
+    pub fn phase(&self) -> OAuthPhase {
+        match self.phase.load(Ordering::Acquire) {
+            Self::WAITING => OAuthPhase::Waiting,
+            Self::CANCELLED => OAuthPhase::Cancelled,
+            _ => OAuthPhase::Finishing,
+        }
+    }
+
+    pub fn cancel(&self) -> bool {
+        self.phase
+            .compare_exchange(
+                Self::WAITING,
+                Self::CANCELLED,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok()
+    }
+
+    pub fn begin_finishing(&self) -> bool {
+        match self.phase.compare_exchange(
+            Self::WAITING,
+            Self::FINISHING,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => true,
+            Err(Self::FINISHING) => true,
+            Err(_) => false,
+        }
+    }
+}
+
+impl Default for OAuthAttempt {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AuthResult {

@@ -22,6 +22,10 @@ Item {
   property bool refreshing: false
   property bool agendaLoading: false
   property bool addingAccount: false
+  property bool cancellingAccount: false
+  property bool oauthCancelable: false
+  property bool oauthFinishing: false
+  property string openingItemId: ""
 
   property var accounts: []
   property var items: []
@@ -189,9 +193,27 @@ Item {
 
   function addAccount() {
     if (addingAccount) return false
-    var requestId = sendRequest("add_account", {})
-    if (requestId === "") return false
     addingAccount = true
+    cancellingAccount = false
+    oauthCancelable = true
+    oauthFinishing = false
+    var requestId = sendRequest("add_account", {})
+    if (requestId === "") {
+      addingAccount = false
+      oauthCancelable = false
+      return false
+    }
+    return true
+  }
+
+  function cancelAddAccount() {
+    if (!addingAccount || cancellingAccount || !oauthCancelable) return false
+    cancellingAccount = true
+    var requestId = sendRequest("cancel_add_account", {})
+    if (requestId === "") {
+      cancellingAccount = false
+      return false
+    }
     return true
   }
 
@@ -205,8 +227,13 @@ Item {
     var id = typeof itemOrId === "object" && itemOrId
       ? String(itemOrId.id || "")
       : String(itemOrId || "")
-    if (id === "") return false
-    return sendRequest("open_item", { itemId: id }) !== ""
+    if (id === "" || openingItemId !== "") return false
+    openingItemId = id
+    if (sendRequest("open_item", { itemId: id }) === "") {
+      openingItemId = ""
+      return false
+    }
+    return true
   }
 
   function copyObject(source) {
@@ -252,12 +279,31 @@ Item {
     return pending
   }
 
+  function hasPendingMethod(method) {
+    for (var id in _pendingRequests)
+      if (_pendingRequests[id].method === method) return true
+    return false
+  }
+
   function applyState(state) {
     if (!state || typeof state !== "object") return
     status = String(state.status || "idle")
     error = state.error === undefined || state.error === null ? "" : String(state.error)
     lastSync = state.lastSync === undefined || state.lastSync === null ? "" : String(state.lastSync)
     accounts = Array.isArray(state.accounts) ? state.accounts : []
+
+    var backendOAuth = state.oauthInProgress === true
+    if (backendOAuth) {
+      addingAccount = true
+      oauthCancelable = state.oauthCancelable === true
+      cancellingAccount = state.oauthCancelling === true
+      oauthFinishing = state.oauthFinishing === true
+    } else if (!hasPendingMethod("add_account")) {
+      addingAccount = false
+      cancellingAccount = false
+      oauthCancelable = false
+      oauthFinishing = false
+    }
 
     if (accountFilter !== "all") {
       var found = false
@@ -305,13 +351,28 @@ Item {
       var code = String(responseError.code || "request_failed")
       var text = String(responseError.message || "Calendar request failed")
       if (pending.method === "refresh") refreshing = false
-      if (pending.method === "add_account") addingAccount = false
+      if (pending.method === "add_account") {
+        addingAccount = false
+        cancellingAccount = false
+        oauthCancelable = false
+        oauthFinishing = false
+      }
+      if (pending.method === "cancel_add_account") {
+        cancellingAccount = false
+        requestState()
+      }
+      if (pending.method === "open_item" && openingItemId === String(pending.params.itemId || ""))
+        openingItemId = ""
       if (pending.method === "get_agenda" && String(message.id) === _activeAgendaRequestId) {
         agendaLoading = false
         _activeAgendaRequestId = ""
       }
-      error = text
-      requestFailed(pending.method, code, text)
+      if (code !== "oauth_cancelled") {
+        error = text
+        requestFailed(pending.method, code, text)
+      } else {
+        error = ""
+      }
       return
     }
 
@@ -321,7 +382,18 @@ Item {
     } else if (pending.method === "get_agenda") {
       applyAgenda(result, pending, message.id)
     } else {
-      if (pending.method === "add_account") addingAccount = false
+      if (pending.method === "add_account") {
+        addingAccount = false
+        cancellingAccount = false
+        oauthCancelable = false
+        oauthFinishing = false
+      }
+      if (pending.method === "cancel_add_account") {
+        cancellingAccount = result.cancelled === true && hasPendingMethod("add_account")
+        requestState()
+      }
+      if (pending.method === "open_item" && openingItemId === String(pending.params.itemId || ""))
+        openingItemId = ""
       if (pending.method === "refresh") {
         refreshing = false
         requestState()
@@ -367,6 +439,10 @@ Item {
     refreshing = false
     agendaLoading = false
     addingAccount = false
+    cancellingAccount = false
+    oauthCancelable = false
+    oauthFinishing = false
+    openingItemId = ""
   }
 
   function ensureConnected() {

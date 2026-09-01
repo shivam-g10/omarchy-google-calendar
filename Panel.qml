@@ -77,6 +77,12 @@ Panel {
     : ""
   readonly property bool backendConnected: !!actualService && actualService.connected === true
   readonly property bool addingAccount: !!actualService && actualService.addingAccount === true
+  readonly property bool cancellingAccount: !!actualService && actualService.cancellingAccount === true
+  readonly property bool oauthCancelable: !!actualService && actualService.oauthCancelable === true
+  readonly property bool oauthFinishing: !!actualService && actualService.oauthFinishing === true
+  readonly property string openingItemId: actualService && actualService.openingItemId !== undefined
+    ? String(actualService.openingItemId || "")
+    : ""
   readonly property bool serviceBusy: !!actualService
     && (actualService.refreshing === true || actualService.agendaLoading === true || serviceStatus === "syncing")
   readonly property string accountFilter: actualService && actualService.accountFilter !== undefined
@@ -156,8 +162,15 @@ Panel {
   }
 
   function addAccount() {
-    if (!root.addingAccount && root.actualService && typeof root.actualService.addAccount === "function")
+    if (!root.addingAccount && !root.cancellingAccount && !root.oauthFinishing
+        && root.actualService && typeof root.actualService.addAccount === "function")
       root.actualService.addAccount()
+  }
+
+  function cancelAddAccount() {
+    if (root.oauthCancelable && !root.cancellingAccount && root.actualService
+        && typeof root.actualService.cancelAddAccount === "function")
+      root.actualService.cancelAddAccount()
   }
 
   function removeSelectedAccount() {
@@ -174,7 +187,9 @@ Panel {
 
   function openAgendaItem(item) {
     if (!item || !root.actualService || typeof root.actualService.openItem !== "function") return
-    root.actualService.openItem(String(item.id || ""))
+    var id = String(item.id || "")
+    if (id === "" || root.openingItemId !== "") return
+    root.actualService.openItem(id)
   }
 
   function serviceStatusText() {
@@ -182,7 +197,11 @@ Panel {
     var accountCount = root.serviceAccounts.length
     var prefix = accountCount + " account" + (accountCount === 1 ? "" : "s")
     if (!root.backendConnected || root.serviceStatus === "connecting") return prefix + " · connecting…"
-    if (root.addingAccount) return "Waiting for Google sign-in…"
+    if (root.cancellingAccount) return "Cancelling Google sign-in…"
+    if (root.oauthFinishing) return "Finishing Google sign-in…"
+    if (root.addingAccount && root.oauthCancelable) return "Waiting for Google sign-in…"
+    if (root.addingAccount) return "Opening Google sign-in…"
+    if (root.openingItemId !== "") return "Opening event…"
     if (root.serviceStatus === "not_configured") return "Google OAuth setup needed"
     if (root.serviceStatus === "empty") return "No accounts connected"
     if (root.serviceBusy) return prefix + " · syncing…"
@@ -229,8 +248,8 @@ Panel {
   }
 
   function open() {
-    refresh()
     root.controller.show()
+    root.refreshView()
     // Set after showing, not before: showing hands the popout coordinator
     // over, which closes whichever panel was open, and that close clears the
     // shared flag. Deferring means the panel taking over always wins, while
@@ -267,9 +286,17 @@ Panel {
       root.bar.centerHoverRevealSuppressed = value
   }
 
-  function refresh() {
+  function refreshView() {
     root.today = new Date()
     root.goToToday()
+  }
+
+  function refresh() {
+    root.refreshView()
+  }
+
+  function refreshFromGoogle() {
+    root.refreshView()
     root.refreshCalendars()
   }
 
@@ -495,16 +522,26 @@ Panel {
                 foreground: root.contentForeground
                 fontFamily: root.contentFontFamily
                 enabled: root.backendConnected && root.serviceAccounts.length > 0 && !root.serviceBusy
-                onClicked: root.refreshCalendars()
+                onClicked: root.refreshFromGoogle()
               }
 
               PanelActionButton {
-                iconText: "+"
-                tooltipText: root.addingAccount ? "Waiting for Google sign-in…" : "Add Google account"
+                iconText: root.oauthCancelable ? "×" : "+"
+                tooltipText: root.cancellingAccount
+                  ? "Cancelling Google sign-in…"
+                  : (root.oauthFinishing
+                    ? "Finishing Google sign-in…"
+                    : (root.oauthCancelable
+                      ? "Cancel Google sign-in"
+                      : (root.addingAccount ? "Opening Google sign-in…" : "Add Google account")))
                 foreground: root.contentForeground
                 fontFamily: root.contentFontFamily
-                enabled: root.backendConnected && !root.addingAccount
-                onClicked: root.addAccount()
+                enabled: root.backendConnected && !root.cancellingAccount && !root.oauthFinishing
+                  && (!root.addingAccount || root.oauthCancelable)
+                onClicked: {
+                  if (root.oauthCancelable) root.cancelAddAccount()
+                  else root.addAccount()
+                }
               }
 
               PanelActionButton {
@@ -1281,16 +1318,21 @@ Panel {
                     readonly property color sourceColor: modelData.sourceColors && modelData.sourceColors.length > 0
                       ? modelData.sourceColors[0]
                       : (modelData.color || Color.accent)
+                    readonly property bool openingItem: root.openingItemId === String(modelData.id || "")
 
                     width: agendaColumn.width
                     implicitHeight: Math.max(Style.space(62), agendaItemContent.implicitHeight + Style.space(18))
                     radius: Style.cornerRadius
-                    color: agendaItemMouse.containsMouse
-                      ? Style.hoverFillFor(root.contentForeground, sourceColor)
-                      : Qt.rgba(root.contentForeground.r, root.contentForeground.g, root.contentForeground.b, 0.025)
-                    borderSpec: Border.flat(agendaItemMouse.containsMouse
-                      ? Style.hoverStateColor(root.contentForeground, sourceColor)
-                      : Qt.rgba(root.contentForeground.r, root.contentForeground.g, root.contentForeground.b, 0.12), 1)
+                    color: openingItem
+                      ? Style.selectedFillFor(root.contentForeground, sourceColor)
+                      : (agendaItemMouse.containsMouse
+                        ? Style.hoverFillFor(root.contentForeground, sourceColor)
+                        : Qt.rgba(root.contentForeground.r, root.contentForeground.g, root.contentForeground.b, 0.025))
+                    borderSpec: Border.flat(openingItem
+                      ? Style.selectedStateColor(root.contentForeground, sourceColor)
+                      : (agendaItemMouse.containsMouse
+                        ? Style.hoverStateColor(root.contentForeground, sourceColor)
+                        : Qt.rgba(root.contentForeground.r, root.contentForeground.g, root.contentForeground.b, 0.12)), 1)
 
                     Row {
                       id: agendaItemContent
@@ -1342,9 +1384,11 @@ Panel {
 
                         Text {
                           width: parent.width
-                          text: root.agendaMeta(modelData)
+                          text: agendaItemContent.parent.openingItem ? "Opening event…" : root.agendaMeta(modelData)
                           textFormat: Text.PlainText
-                          color: Qt.darker(root.contentForeground, 1.5)
+                          color: agendaItemContent.parent.openingItem
+                            ? Style.selectedStateColor(root.contentForeground, agendaItemContent.parent.sourceColor)
+                            : Qt.darker(root.contentForeground, 1.5)
                           font.family: root.contentFontFamily
                           font.pixelSize: Style.font.caption
                           wrapMode: Text.Wrap
@@ -1358,13 +1402,15 @@ Panel {
                       id: agendaItemMouse
                       anchors.fill: parent
                       hoverEnabled: true
-                      cursorShape: Qt.PointingHandCursor
-                      onClicked: root.openAgendaItem(modelData)
+                      cursorShape: parent.openingItem ? Qt.BusyCursor : Qt.PointingHandCursor
+                      onClicked: {
+                        if (!parent.openingItem) root.openAgendaItem(modelData)
+                      }
                     }
 
                     PanelToolTip {
                       visible: agendaItemMouse.containsMouse
-                      text: String(modelData.title || "Untitled")
+                      text: parent.openingItem ? "Opening event…" : String(modelData.title || "Untitled")
                       fontFamily: root.contentFontFamily
                     }
                   }

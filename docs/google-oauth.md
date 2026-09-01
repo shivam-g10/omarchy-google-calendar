@@ -27,9 +27,10 @@ accounts. It does not create, edit, or delete cloud data.
 ## Connect accounts
 
 Open the calendar panel and click **+** once. Google opens in your existing
-default-browser session. The button stays disabled while sign-in is pending;
-after a successful callback, that tab continues to this project's GitHub page.
-Repeat for every account you want to combine.
+default-browser session. While sign-in is pending, **+** becomes **×**. Click
+**×** if you close the browser or decide not to select an account. After a
+successful callback, that tab continues to this project's GitHub page. Repeat
+for every account you want to combine.
 
 If Brave cannot accept the local handoff, fully quit it with **Menu → Exit**
 and reopen it. Closing its windows alone can leave the browser process running.
@@ -38,6 +39,12 @@ You can also connect an account from a terminal:
 
 ```bash
 omarchy-calendar add
+```
+
+Cancel a pending terminal or panel sign-in with:
+
+```bash
+omarchy-calendar cancel
 ```
 
 Useful diagnostics:
