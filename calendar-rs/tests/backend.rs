@@ -28,10 +28,17 @@ fn fixture(name: &str) -> Value {
 #[derive(Default)]
 struct FakeSecrets {
     values: Mutex<HashMap<String, String>>,
+    fail_store: Mutex<bool>,
 }
 
 impl SecretStoreApi for FakeSecrets {
     fn store(&self, account_id: &str, refresh_token: &str) -> Result<()> {
+        if *self.fail_store.lock().unwrap() {
+            return Err(CalendarError::new(
+                "secret_service_error",
+                "Could not store Google credentials",
+            ));
+        }
         self.values
             .lock()
             .unwrap()
@@ -68,6 +75,8 @@ struct FakeGoogle {
     authorize_calls: AtomicUsize,
     authorization_gate: Mutex<Option<AuthorizationGate>>,
     authorization_error: Mutex<Option<CalendarError>>,
+    authorization_subject: Mutex<String>,
+    authorization_email: Mutex<String>,
 }
 
 struct AuthorizationGate {
@@ -89,6 +98,8 @@ impl FakeGoogle {
             authorize_calls: AtomicUsize::new(0),
             authorization_gate: Mutex::new(None),
             authorization_error: Mutex::new(None),
+            authorization_subject: Mutex::new("google-subject-1".into()),
+            authorization_email: Mutex::new("person@example.com".into()),
         }
     }
 
@@ -154,8 +165,8 @@ impl GoogleApi for FakeGoogle {
         Ok(AuthResult {
             refresh_token: "refresh-token-never-cache".into(),
             access_token: "access-token-never-cache".into(),
-            subject: "google-subject-1".into(),
-            email: "person@example.com".into(),
+            subject: self.authorization_subject.lock().unwrap().clone(),
+            email: self.authorization_email.lock().unwrap().clone(),
         })
     }
 
@@ -307,6 +318,45 @@ fn database_and_socket_are_private() {
         0o600
     );
     server.cleanup();
+}
+
+#[test]
+fn legacy_invalid_grant_is_migrated_to_reconnect_state() {
+    let temporary = tempfile::tempdir().unwrap();
+    let database_path = temporary.path().join("state/agenda.db");
+    fs::create_dir_all(database_path.parent().unwrap()).unwrap();
+    let connection = rusqlite::Connection::open(&database_path).unwrap();
+    connection
+        .execute_batch(
+            r#"
+            CREATE TABLE accounts (
+                account_id TEXT PRIMARY KEY,
+                google_sub TEXT NOT NULL UNIQUE,
+                email TEXT NOT NULL,
+                label TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                last_sync TEXT,
+                error TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            INSERT INTO accounts VALUES (
+                'account-1', 'google-subject-1', 'person@example.com', 'Personal',
+                1, '2026-09-03T00:00:00Z', 'invalid_grant',
+                '2026-09-01T00:00:00Z', '2026-09-03T00:00:00Z'
+            );
+            "#,
+        )
+        .unwrap();
+    drop(connection);
+
+    let database = Database::new(&database_path).unwrap();
+    let account = database.account("account-1").unwrap().unwrap();
+    assert_eq!(account.error_code.as_deref(), Some("credentials_expired"));
+    assert_eq!(
+        account.error.as_deref(),
+        Some("Google access expired. Sign in again.")
+    );
 }
 
 #[test]
@@ -506,6 +556,141 @@ fn add_remove_keeps_secrets_outside_database() {
 }
 
 #[test]
+fn reconnect_replaces_token_preserves_cache_and_targets_later_sync() {
+    let harness = Harness::new();
+    harness.add_database_account("account-1");
+    harness.service.refresh(&json!({})).unwrap();
+    harness
+        .secrets
+        .values
+        .lock()
+        .unwrap()
+        .insert("account-1".into(), "expired-token".into());
+    harness
+        .database
+        .set_sync_result(
+            "account-1",
+            Some("credentials_expired"),
+            Some("Google access expired. Sign in again."),
+        )
+        .unwrap();
+    let cached_before = harness
+        .service
+        .agenda(&json!({"start": "2026-08-31", "end": "2026-09-01", "account": "account-1"}))
+        .unwrap();
+
+    let reconnected = harness
+        .service
+        .reconnect_account(&json!({"accountId": "account-1"}))
+        .unwrap();
+    assert_eq!(reconnected["reconnected"], true);
+    assert_eq!(reconnected["account"]["needsReconnect"], false);
+    assert_eq!(reconnected["account"]["connected"], true);
+    assert_eq!(reconnected["account"]["label"], "Personal");
+    assert_eq!(
+        harness
+            .secrets
+            .values
+            .lock()
+            .unwrap()
+            .get("account-1")
+            .map(String::as_str),
+        Some("refresh-token-never-cache")
+    );
+    let cached_after = harness
+        .service
+        .agenda(&json!({"start": "2026-08-31", "end": "2026-09-01", "account": "account-1"}))
+        .unwrap();
+    assert_eq!(cached_after["items"], cached_before["items"]);
+
+    let refreshed = harness
+        .service
+        .refresh(&json!({"accountId": "account-1"}))
+        .unwrap();
+    assert_eq!(refreshed["accounts"][0]["ok"], true);
+}
+
+#[test]
+fn reconnect_rejects_wrong_google_identity_and_preserves_old_token() {
+    let harness = Harness::new();
+    harness.add_database_account("account-1");
+    harness
+        .secrets
+        .values
+        .lock()
+        .unwrap()
+        .insert("account-1".into(), "expired-token".into());
+    *harness.google.authorization_subject.lock().unwrap() = "wrong-subject".into();
+    *harness.google.authorization_email.lock().unwrap() = "wrong@example.com".into();
+
+    let error = harness
+        .service
+        .reconnect_account(&json!({"accountId": "account-1"}))
+        .expect_err("wrong Google identity must be rejected");
+    assert_eq!(error.code, "oauth_account_mismatch");
+    assert_eq!(
+        harness
+            .secrets
+            .values
+            .lock()
+            .unwrap()
+            .get("account-1")
+            .map(String::as_str),
+        Some("expired-token")
+    );
+    assert_eq!(
+        *harness.google.revoked.lock().unwrap(),
+        vec!["refresh-token-never-cache"]
+    );
+}
+
+#[test]
+fn reconnect_oauth_and_secret_failures_preserve_old_token() {
+    let harness = Harness::new();
+    harness.add_database_account("account-1");
+    harness
+        .secrets
+        .values
+        .lock()
+        .unwrap()
+        .insert("account-1".into(), "expired-token".into());
+
+    harness.google.fail_next_authorization();
+    let oauth_error = harness
+        .service
+        .reconnect_account(&json!({"accountId": "account-1"}))
+        .expect_err("OAuth failure must be reported");
+    assert_eq!(oauth_error.code, "oauth_denied");
+    assert_eq!(
+        harness
+            .secrets
+            .values
+            .lock()
+            .unwrap()
+            .get("account-1")
+            .map(String::as_str),
+        Some("expired-token")
+    );
+
+    *harness.secrets.fail_store.lock().unwrap() = true;
+    let store_error = harness
+        .service
+        .reconnect_account(&json!({"accountId": "account-1"}))
+        .expect_err("secret-store failure must be reported");
+    assert_eq!(store_error.code, "secret_service_error");
+    assert_eq!(
+        harness
+            .secrets
+            .values
+            .lock()
+            .unwrap()
+            .get("account-1")
+            .map(String::as_str),
+        Some("expired-token")
+    );
+}
+
+#[test]
 fn concurrent_add_account_is_rejected_and_guard_is_released() {
     let temporary = tempfile::tempdir().unwrap();
     let database = Arc::new(Database::new(temporary.path().join("state/agenda.db")).unwrap());
@@ -572,6 +757,53 @@ fn abandoned_authorization_can_be_cancelled_and_retried() {
     let retry = service.add_account(&json!({}));
     assert!(retry.is_ok());
     assert_eq!(google.authorize_calls.load(Ordering::SeqCst), 2);
+}
+
+#[test]
+fn reconnect_authorization_can_be_cancelled_without_losing_token() {
+    let temporary = tempfile::tempdir().unwrap();
+    let database = Arc::new(Database::new(temporary.path().join("state/agenda.db")).unwrap());
+    database
+        .upsert_account(
+            "account-1",
+            "google-subject-1",
+            "person@example.com",
+            "Personal",
+        )
+        .unwrap();
+    let (google, authorization_started, _release_authorization) =
+        FakeGoogle::with_blocked_first_authorization();
+    let google = Arc::new(google);
+    let secrets = Arc::new(FakeSecrets::default());
+    secrets
+        .values
+        .lock()
+        .unwrap()
+        .insert("account-1".into(), "expired-token".into());
+    let service = Arc::new(CalendarService::new(database, google, secrets.clone()));
+
+    let reconnecting_service = service.clone();
+    let reconnect = thread::spawn(move || {
+        reconnecting_service.reconnect_account(&json!({"accountId": "account-1"}))
+    });
+    authorization_started
+        .recv_timeout(Duration::from_secs(2))
+        .expect("reconnect authorization did not start");
+    assert_eq!(service.cancel_add_account().unwrap()["cancelled"], true);
+    let error = reconnect
+        .join()
+        .expect("reconnect thread panicked")
+        .expect_err("cancelled reconnect should fail");
+    assert_eq!(error.code, "oauth_cancelled");
+    assert_eq!(
+        secrets
+            .values
+            .lock()
+            .unwrap()
+            .get("account-1")
+            .map(String::as_str),
+        Some("expired-token")
+    );
 }
 
 #[test]

@@ -268,6 +268,62 @@ impl CalendarService {
         }
     }
 
+    pub fn reconnect_account(&self, parameters: &Value) -> Result<Value> {
+        let account_id = parameters
+            .get("accountId")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| CalendarError::new("invalid_params", "accountId is required"))?;
+        let account = self.database.account(account_id)?.ok_or_else(|| {
+            CalendarError::new("account_not_found", "Google account was not found")
+        })?;
+        let oauth_guard = OAuthGuard::acquire(self)?;
+        self.notify_state();
+        let result = self.reconnect_account_inner(&account, oauth_guard.attempt());
+        drop(oauth_guard);
+        result
+    }
+
+    fn reconnect_account_inner(
+        &self,
+        account: &crate::database::AccountRow,
+        attempt: &OAuthAttempt,
+    ) -> Result<Value> {
+        let authorization = self.google.authorize(attempt)?;
+        if authorization.subject != account.google_sub {
+            let _ = self.google.revoke(&authorization.refresh_token);
+            return Err(CalendarError::new(
+                "oauth_account_mismatch",
+                format!(
+                    "Wrong Google account selected. Sign in as {}.",
+                    account.email
+                ),
+            ));
+        }
+        self.secret_store
+            .store(&account.account_id, &authorization.refresh_token)?;
+        self.database.upsert_account(
+            &account.account_id,
+            &authorization.subject,
+            &authorization.email,
+            &account.label,
+        )?;
+        self.notify_state();
+        let state = self.state()?;
+        let updated = state["accounts"]
+            .as_array()
+            .and_then(|accounts| {
+                accounts
+                    .iter()
+                    .find(|candidate| candidate["id"] == account.account_id)
+            })
+            .cloned()
+            .ok_or_else(|| {
+                CalendarError::new("internal_error", "Reconnected account disappeared")
+            })?;
+        Ok(json!({"account": updated, "reconnected": true}))
+    }
+
     pub fn remove_account(&self, parameters: &Value) -> Result<Value> {
         let account_id = parameters
             .get("accountId")
@@ -344,14 +400,18 @@ impl CalendarService {
             let sync_result = self.sync_account(&account.account_id);
             match sync_result {
                 Ok(()) => {
-                    self.database.set_sync_result(&account.account_id, None)?;
+                    self.database
+                        .set_sync_result(&account.account_id, None, None)?;
                     results
                         .push(json!({"id": account.account_id, "ok": true, "error": Value::Null}));
                 }
                 Err(error) => {
                     let message = safe_message(&error.message, "Operation failed");
-                    self.database
-                        .set_sync_result(&account.account_id, Some(&message))?;
+                    self.database.set_sync_result(
+                        &account.account_id,
+                        Some(&error.code),
+                        Some(&message),
+                    )?;
                     results.push(json!({"id": account.account_id, "ok": false, "error": message}));
                 }
             }
@@ -455,6 +515,7 @@ impl CalendarService {
             "get_agenda" | "list_agenda" => self.agenda(parameters),
             "refresh" => self.refresh(parameters),
             "add_account" | "add" => self.add_account(parameters),
+            "reconnect_account" | "reconnect" => self.reconnect_account(parameters),
             "cancel_add_account" | "cancel" => self.cancel_add_account(),
             "remove_account" | "remove" => self.remove_account(parameters),
             "open_item" => self.open_item(parameters),

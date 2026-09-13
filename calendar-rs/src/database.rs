@@ -18,6 +18,7 @@ pub struct AccountRow {
     pub enabled: bool,
     pub last_sync: Option<String>,
     pub error: Option<String>,
+    pub error_code: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -84,6 +85,7 @@ impl Database {
                     enabled INTEGER NOT NULL DEFAULT 1,
                     last_sync TEXT,
                     error TEXT,
+                    error_code TEXT,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
@@ -169,6 +171,36 @@ impl Database {
                 .execute("ALTER TABLE calendars ADD COLUMN full_sync_at TEXT", [])
                 .map_err(database_sql)?;
         }
+        let has_error_code = {
+            let mut statement = connection
+                .prepare("PRAGMA table_info(accounts)")
+                .map_err(database_sql)?;
+            let columns = statement
+                .query_map([], |row| row.get::<_, String>(1))
+                .map_err(database_sql)?;
+            let mut found = false;
+            for column in columns {
+                if column.map_err(database_sql)? == "error_code" {
+                    found = true;
+                }
+            }
+            found
+        };
+        if !has_error_code {
+            connection
+                .execute("ALTER TABLE accounts ADD COLUMN error_code TEXT", [])
+                .map_err(database_sql)?;
+        }
+        // Older releases persisted Google's raw token error as display text.
+        connection
+            .execute(
+                "UPDATE accounts SET error = ?1, error_code = ?2 WHERE error = 'invalid_grant'",
+                params![
+                    "Google access expired. Sign in again.",
+                    "credentials_expired"
+                ],
+            )
+            .map_err(database_sql)?;
         fs::set_permissions(&self.path, fs::Permissions::from_mode(0o600)).map_err(database_io)?;
         Ok(())
     }
@@ -178,7 +210,7 @@ impl Database {
         let connection = self.connect()?;
         let mut statement = connection
             .prepare(
-                "SELECT account_id, google_sub, email, label, enabled, last_sync, error \
+                "SELECT account_id, google_sub, email, label, enabled, last_sync, error, error_code \
                  FROM accounts ORDER BY label COLLATE NOCASE",
             )
             .map_err(database_sql)?;
@@ -194,7 +226,7 @@ impl Database {
         let connection = self.connect()?;
         connection
             .query_row(
-                "SELECT account_id, google_sub, email, label, enabled, last_sync, error \
+                "SELECT account_id, google_sub, email, label, enabled, last_sync, error, error_code \
                  FROM accounts WHERE account_id = ?1",
                 [account_id],
                 account_from_row,
@@ -208,7 +240,7 @@ impl Database {
         let connection = self.connect()?;
         connection
             .query_row(
-                "SELECT account_id, google_sub, email, label, enabled, last_sync, error \
+                "SELECT account_id, google_sub, email, label, enabled, last_sync, error, error_code \
                  FROM accounts WHERE google_sub = ?1",
                 [google_sub],
                 account_from_row,
@@ -232,14 +264,15 @@ impl Database {
                 r#"
                 INSERT INTO accounts (
                     account_id, google_sub, email, label, enabled,
-                    last_sync, error, created_at, updated_at
-                ) VALUES (?1, ?2, ?3, ?4, 1, NULL, NULL, ?5, ?5)
+                    last_sync, error, error_code, created_at, updated_at
+                ) VALUES (?1, ?2, ?3, ?4, 1, NULL, NULL, NULL, ?5, ?5)
                 ON CONFLICT(account_id) DO UPDATE SET
                     google_sub = excluded.google_sub,
                     email = excluded.email,
                     label = excluded.label,
                     enabled = 1,
                     error = NULL,
+                    error_code = NULL,
                     updated_at = excluded.updated_at
                 "#,
                 params![account_id, google_sub, email, label, now],
@@ -257,7 +290,12 @@ impl Database {
         Ok(changed > 0)
     }
 
-    pub fn set_sync_result(&self, account_id: &str, error: Option<&str>) -> Result<()> {
+    pub fn set_sync_result(
+        &self,
+        account_id: &str,
+        error_code: Option<&str>,
+        error: Option<&str>,
+    ) -> Result<()> {
         let _guard = self.lock.lock().expect("database mutex poisoned");
         let connection = self.connect()?;
         let now = iso_now();
@@ -265,11 +303,13 @@ impl Database {
             .execute(
                 r#"
                 UPDATE accounts
-                SET last_sync = CASE WHEN ?1 IS NULL THEN ?2 ELSE last_sync END,
-                    error = ?1, updated_at = ?2
-                WHERE account_id = ?3
+                SET last_sync = CASE WHEN ?2 IS NULL THEN ?3 ELSE last_sync END,
+                    error_code = ?1,
+                    error = ?2,
+                    updated_at = ?3
+                WHERE account_id = ?4
                 "#,
-                params![error, now, account_id],
+                params![error_code, error, now, account_id],
             )
             .map_err(database_sql)?;
         Ok(())
@@ -554,6 +594,10 @@ impl Database {
             } else {
                 "idle"
             };
+            let needs_reconnect = matches!(
+                account.error_code.as_deref(),
+                Some("credentials_expired" | "credentials_missing")
+            );
             output.push(json!({
                 "id": account.account_id,
                 "email": account.email,
@@ -561,6 +605,9 @@ impl Database {
                 "enabled": account.enabled,
                 "status": status,
                 "error": account.error,
+                "errorCode": account.error_code,
+                "needsReconnect": needs_reconnect,
+                "connected": !needs_reconnect,
                 "lastSync": account.last_sync,
                 "calendars": calendars,
             }));
@@ -792,6 +839,7 @@ fn account_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AccountRow> {
         enabled: row.get::<_, i64>(4)? != 0,
         last_sync: row.get(5)?,
         error: row.get(6)?,
+        error_code: row.get(7)?,
     })
 }
 

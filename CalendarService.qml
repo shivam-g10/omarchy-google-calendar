@@ -25,6 +25,7 @@ Item {
   property bool cancellingAccount: false
   property bool oauthCancelable: false
   property bool oauthFinishing: false
+  property string reconnectingAccountId: ""
   property string openingItemId: ""
 
   property var accounts: []
@@ -191,6 +192,17 @@ Item {
     return true
   }
 
+  function refreshAccount(accountId) {
+    var id = String(accountId || "")
+    if (id === "" || !calendarSocket.connected || refreshing) return false
+    refreshing = true
+    if (sendRequest("refresh", { accountId: id }) === "") {
+      refreshing = false
+      return false
+    }
+    return true
+  }
+
   function addAccount() {
     if (addingAccount) return false
     addingAccount = true
@@ -201,6 +213,24 @@ Item {
     if (requestId === "") {
       addingAccount = false
       oauthCancelable = false
+      return false
+    }
+    return true
+  }
+
+  function reconnectAccount(accountId) {
+    var id = String(accountId || "")
+    if (id === "" || addingAccount) return false
+    addingAccount = true
+    cancellingAccount = false
+    oauthCancelable = true
+    oauthFinishing = false
+    reconnectingAccountId = id
+    var requestId = sendRequest("reconnect_account", { accountId: id })
+    if (requestId === "") {
+      addingAccount = false
+      oauthCancelable = false
+      reconnectingAccountId = ""
       return false
     }
     return true
@@ -285,6 +315,10 @@ Item {
     return false
   }
 
+  function hasPendingOAuth() {
+    return hasPendingMethod("add_account") || hasPendingMethod("reconnect_account")
+  }
+
   function applyState(state) {
     if (!state || typeof state !== "object") return
     status = String(state.status || "idle")
@@ -298,7 +332,7 @@ Item {
       oauthCancelable = state.oauthCancelable === true
       cancellingAccount = state.oauthCancelling === true
       oauthFinishing = state.oauthFinishing === true
-    } else if (!hasPendingMethod("add_account")) {
+    } else if (!hasPendingOAuth()) {
       addingAccount = false
       cancellingAccount = false
       oauthCancelable = false
@@ -351,11 +385,12 @@ Item {
       var code = String(responseError.code || "request_failed")
       var text = String(responseError.message || "Calendar request failed")
       if (pending.method === "refresh") refreshing = false
-      if (pending.method === "add_account") {
+      if (pending.method === "add_account" || pending.method === "reconnect_account") {
         addingAccount = false
         cancellingAccount = false
         oauthCancelable = false
         oauthFinishing = false
+        reconnectingAccountId = ""
       }
       if (pending.method === "cancel_add_account") {
         cancellingAccount = false
@@ -382,14 +417,14 @@ Item {
     } else if (pending.method === "get_agenda") {
       applyAgenda(result, pending, message.id)
     } else {
-      if (pending.method === "add_account") {
+      if (pending.method === "add_account" || pending.method === "reconnect_account") {
         addingAccount = false
         cancellingAccount = false
         oauthCancelable = false
         oauthFinishing = false
       }
       if (pending.method === "cancel_add_account") {
-        cancellingAccount = result.cancelled === true && hasPendingMethod("add_account")
+        cancellingAccount = result.cancelled === true && hasPendingOAuth()
         requestState()
       }
       if (pending.method === "open_item" && openingItemId === String(pending.params.itemId || ""))
@@ -398,6 +433,12 @@ Item {
         refreshing = false
         requestState()
         requestAgenda()
+      } else if (pending.method === "reconnect_account") {
+        var reconnectedId = String(pending.params.accountId || reconnectingAccountId)
+        reconnectingAccountId = ""
+        requestState()
+        requestAgenda()
+        refreshAccount(reconnectedId)
       } else if (pending.method === "add_account" || pending.method === "remove_account") {
         requestState()
         requestAgenda()
@@ -442,6 +483,7 @@ Item {
     cancellingAccount = false
     oauthCancelable = false
     oauthFinishing = false
+    reconnectingAccountId = ""
     openingItemId = ""
   }
 

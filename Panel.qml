@@ -80,6 +80,9 @@ Panel {
   readonly property bool cancellingAccount: !!actualService && actualService.cancellingAccount === true
   readonly property bool oauthCancelable: !!actualService && actualService.oauthCancelable === true
   readonly property bool oauthFinishing: !!actualService && actualService.oauthFinishing === true
+  readonly property string reconnectingAccountId: actualService && actualService.reconnectingAccountId !== undefined
+    ? String(actualService.reconnectingAccountId || "")
+    : ""
   readonly property string openingItemId: actualService && actualService.openingItemId !== undefined
     ? String(actualService.openingItemId || "")
     : ""
@@ -90,6 +93,21 @@ Panel {
     : (actualService && actualService.selectedAccountId !== undefined
       ? String(actualService.selectedAccountId || "all")
       : "all")
+  readonly property int reconnectCount: {
+    var count = 0
+    for (var i = 0; i < serviceAccounts.length; i++)
+      if (serviceAccounts[i].needsReconnect === true) count++
+    return count
+  }
+  readonly property var selectedAccount: {
+    for (var i = 0; i < serviceAccounts.length; i++)
+      if (String(serviceAccounts[i].id || "") === accountFilter) return serviceAccounts[i]
+    return null
+  }
+  readonly property bool selectedNeedsReconnect: selectedAccount && selectedAccount.needsReconnect === true
+  readonly property var reconnectTargetAccount: selectedNeedsReconnect ? selectedAccount : null
+  readonly property bool reconnectBannerEnabled: reconnectTargetAccount !== null
+    && backendConnected && !addingAccount && !cancellingAccount && !oauthFinishing
   readonly property var agendaItems: Model.agendaItemsForDay(serviceItems, selectedDateKey, accountFilter)
   readonly property date selectedDate: dateFromKey(selectedDateKey)
 
@@ -173,6 +191,24 @@ Panel {
       root.actualService.cancelAddAccount()
   }
 
+  function reconnectFromBanner() {
+    if (!root.reconnectBannerEnabled || !root.actualService
+        || typeof root.actualService.reconnectAccount !== "function") return
+    root.actualService.reconnectAccount(String(root.reconnectTargetAccount.id || ""))
+  }
+
+  function reconnectBannerText() {
+    if (root.reconnectTargetAccount) {
+      var accountName = String(root.reconnectTargetAccount.email || root.reconnectTargetAccount.label || "Google account")
+      if (root.reconnectingAccountId === String(root.reconnectTargetAccount.id || ""))
+        return "Complete Google sign-in for " + accountName + " in your browser."
+      return "Google access expired for " + accountName + "."
+    }
+    return "Google access expired for " + root.reconnectCount + " account"
+      + (root.reconnectCount === 1 ? "" : "s")
+      + ". Select an affected account to sign in again."
+  }
+
   function removeSelectedAccount() {
     if (!root.actualService || root.accountFilter === "all" || typeof root.actualService.removeAccount !== "function") return
     var id = root.accountFilter
@@ -198,6 +234,7 @@ Panel {
     var prefix = accountCount + " account" + (accountCount === 1 ? "" : "s")
     if (!root.backendConnected || root.serviceStatus === "connecting") return prefix + " · connecting…"
     if (root.cancellingAccount) return "Cancelling Google sign-in…"
+    if (root.reconnectingAccountId !== "") return "Reconnecting Google account…"
     if (root.oauthFinishing) return "Finishing Google sign-in…"
     if (root.addingAccount && root.oauthCancelable) return "Waiting for Google sign-in…"
     if (root.addingAccount) return "Opening Google sign-in…"
@@ -282,7 +319,9 @@ Panel {
   // Summoning by hotkey moves no pointer, so a hover the bar was still
   // holding must not keep the center indicators revealed behind the panel.
   function setCenterHoverRevealSuppressed(value) {
-    if (root.bar && "centerHoverRevealSuppressed" in root.bar)
+    if (root.bar && typeof root.bar.setCenterHoverRevealSuppressed === "function")
+      root.bar.setCenterHoverRevealSuppressed(value)
+    else if (root.bar && "centerHoverRevealSuppressed" in root.bar)
       root.bar.centerHoverRevealSuppressed = value
   }
 
@@ -558,25 +597,65 @@ Panel {
           }
 
           BorderSurface {
-            visible: root.serviceError !== ""
+            id: reconnectBanner
+            readonly property color urgentColor: root.bar ? root.bar.urgent : Color.urgent
+            visible: root.serviceError !== "" || root.reconnectCount > 0
             width: parent.width
-            implicitHeight: syncError.implicitHeight + Style.space(18)
-            color: Qt.rgba((root.bar ? root.bar.urgent : Color.urgent).r, (root.bar ? root.bar.urgent : Color.urgent).g, (root.bar ? root.bar.urgent : Color.urgent).b, 0.10)
-            borderSpec: Border.flat(Qt.rgba((root.bar ? root.bar.urgent : Color.urgent).r, (root.bar ? root.bar.urgent : Color.urgent).g, (root.bar ? root.bar.urgent : Color.urgent).b, 0.35), 1)
+            implicitHeight: Math.max(syncError.implicitHeight, reconnectAction.implicitHeight) + Style.space(18)
+            color: Qt.rgba(urgentColor.r, urgentColor.g, urgentColor.b,
+              reconnectBannerMouse.containsMouse && root.reconnectBannerEnabled ? 0.18 : 0.10)
+            borderSpec: Border.flat(Qt.rgba(urgentColor.r, urgentColor.g, urgentColor.b, 0.35), 1)
             radius: Style.cornerRadius
 
-            Text {
-              id: syncError
+            Behavior on color { ColorAnimation { duration: 60 } }
+
+            Row {
               anchors.left: parent.left
               anchors.right: parent.right
               anchors.verticalCenter: parent.verticalCenter
               anchors.margins: Style.space(9)
-              text: root.serviceError
-              textFormat: Text.PlainText
-              color: root.contentForeground
-              font.family: root.contentFontFamily
-              font.pixelSize: Style.font.caption
-              wrapMode: Text.WordWrap
+              spacing: Style.space(8)
+
+              Text {
+                id: syncError
+                width: parent.width - (reconnectAction.visible ? reconnectAction.width + parent.spacing : 0)
+                anchors.verticalCenter: parent.verticalCenter
+                text: root.reconnectCount > 0
+                  ? root.reconnectBannerText()
+                  : root.serviceError
+                textFormat: Text.PlainText
+                color: root.contentForeground
+                font.family: root.contentFontFamily
+                font.pixelSize: Style.font.caption
+                wrapMode: Text.WordWrap
+              }
+
+              Button {
+                id: reconnectAction
+                visible: root.selectedNeedsReconnect
+                enabled: root.reconnectBannerEnabled
+                anchors.verticalCenter: parent.verticalCenter
+                z: 2
+                text: root.reconnectingAccountId !== "" ? "Complete sign-in" : "Sign in again →"
+                bordered: true
+                focusable: true
+                foreground: root.contentForeground
+                accent: reconnectBanner.urgentColor
+                fontFamily: root.contentFontFamily
+                fontSize: Style.font.caption
+                horizontalPadding: Style.space(9)
+                verticalPadding: Style.space(5)
+                onClicked: root.reconnectFromBanner()
+              }
+            }
+
+            MouseArea {
+              id: reconnectBannerMouse
+              anchors.fill: parent
+              enabled: root.reconnectCount > 0 && root.reconnectBannerEnabled
+              hoverEnabled: true
+              cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+              onClicked: root.reconnectFromBanner()
             }
           }
 
@@ -603,6 +682,7 @@ Panel {
               BorderSurface {
                 required property var modelData
                 readonly property bool chosen: root.accountFilter === String(modelData.id || "")
+                readonly property bool needsReconnect: modelData.needsReconnect === true
                 readonly property color accountColor: modelData.color
                   ? modelData.color
                   : (modelData.calendars && modelData.calendars.length > 0 && modelData.calendars[0].color
@@ -614,10 +694,16 @@ Panel {
                 radius: height / 2
                 color: chosen
                   ? Style.selectedFillFor(root.contentForeground, accountColor)
-                  : (accountChipMouse.containsMouse ? Style.hoverFillFor(root.contentForeground, accountColor) : "transparent")
-                borderSpec: Border.flat(chosen
-                  ? Style.selectedStateColor(root.contentForeground, accountColor)
-                  : Qt.rgba(root.contentForeground.r, root.contentForeground.g, root.contentForeground.b, 0.20), 1)
+                  : (needsReconnect
+                    ? Qt.rgba((root.bar ? root.bar.urgent : Color.urgent).r, (root.bar ? root.bar.urgent : Color.urgent).g, (root.bar ? root.bar.urgent : Color.urgent).b, 0.10)
+                    : (accountChipMouse.containsMouse ? Style.hoverFillFor(root.contentForeground, accountColor) : "transparent"))
+                borderSpec: Border.flat(
+                  needsReconnect
+                    ? (root.bar ? root.bar.urgent : Color.urgent)
+                    : (chosen
+                      ? Style.selectedStateColor(root.contentForeground, accountColor)
+                      : Qt.rgba(root.contentForeground.r, root.contentForeground.g, root.contentForeground.b, 0.20)),
+                  1)
 
                 Row {
                   id: accountChipRow
@@ -653,13 +739,6 @@ Panel {
                   onClicked: root.setAccountFilter(String(modelData.id || "all"))
                 }
 
-                PanelToolTip {
-                  visible: accountChipMouse.containsMouse
-                  text: modelData.connected === false
-                    ? String(modelData.error || "Account needs reconnecting")
-                    : String(modelData.email || modelData.label || "")
-                  fontFamily: root.contentFontFamily
-                }
               }
             }
           }

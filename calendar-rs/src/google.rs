@@ -405,7 +405,18 @@ impl GoogleApi for GoogleClient {
         if !client.client_secret.is_empty() {
             form.insert("client_secret".into(), client.client_secret);
         }
-        let response = self.request_json("POST", &client.token_uri, None, Some(&form), false)?;
+        let response = self
+            .request_json("POST", &client.token_uri, None, Some(&form), false)
+            .map_err(|error| {
+                if error.http_status == Some(400) && error.message == "invalid_grant" {
+                    CalendarError::new(
+                        "credentials_expired",
+                        "Google access expired. Sign in again.",
+                    )
+                } else {
+                    error
+                }
+            })?;
         response
             .get("access_token")
             .and_then(Value::as_str)
@@ -808,6 +819,47 @@ mod tests {
         });
         let client = GoogleClient::new("/unused/google-client.json");
         assert!(client.revoke_at(&format!("http://{address}/revoke"), "refresh-token"));
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn invalid_grant_maps_to_expired_credentials() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 2048];
+            let count = stream.read(&mut request).unwrap();
+            assert!(String::from_utf8_lossy(&request[..count]).starts_with("POST /token HTTP/1.1"));
+            let body = br#"{"error":"invalid_grant","error_description":"Token has been expired or revoked."}"#;
+            write!(
+                stream,
+                "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            )
+            .unwrap();
+            stream.write_all(body).unwrap();
+        });
+        let temporary = tempfile::tempdir().unwrap();
+        let client_path = temporary.path().join("google-client.json");
+        fs::write(
+            &client_path,
+            json!({
+                "installed": {
+                    "client_id": "test-client",
+                    "client_secret": "test-secret",
+                    "token_uri": format!("http://{address}/token")
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let client = GoogleClient::new(client_path);
+        let error = client
+            .refresh_access_token("expired-refresh-token")
+            .expect_err("invalid_grant must require reconnection");
+        assert_eq!(error.code, "credentials_expired");
+        assert_eq!(error.message, "Google access expired. Sign in again.");
         server.join().unwrap();
     }
 }

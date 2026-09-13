@@ -64,13 +64,14 @@ fn help(command: Option<&str>) {
         Some("status") => "status",
         Some("list") => "list [--start DATE] [--end DATE] [--account ID]",
         Some("add") => "add [--label LABEL]",
+        Some("reconnect") => "reconnect ACCOUNT_ID",
         Some("cancel") => "cancel",
         Some("remove") => "remove ACCOUNT_ID",
         Some("refresh") => "refresh [--account ID]",
         Some("open") => "open ITEM_ID",
         _ => {
             println!(
-                "Omarchy calendar backend\n\nCommands:\n  daemon\n  status\n  list [--start DATE] [--end DATE] [--account ID]\n  add [--label LABEL]\n  cancel\n  remove ACCOUNT_ID\n  refresh [--account ID]\n  open ITEM_ID"
+                "Omarchy calendar backend\n\nCommands:\n  daemon\n  status\n  list [--start DATE] [--end DATE] [--account ID]\n  add [--label LABEL]\n  reconnect ACCOUNT_ID\n  cancel\n  remove ACCOUNT_ID\n  refresh [--account ID]\n  open ITEM_ID"
             );
             return;
         }
@@ -141,6 +142,15 @@ fn command() -> Result<Value, CalendarError> {
         "cancel" => {
             require_positionals(&parse_tail(&arguments, &[])?, 0, "omarchy-calendar cancel")?;
             send_request(&socket_path, "cancel_add_account", json!({}))
+        }
+        "reconnect" => {
+            let parsed = parse_tail(&arguments, &[])?;
+            require_positionals(&parsed, 1, "omarchy-calendar reconnect ACCOUNT_ID")?;
+            send_request(
+                &socket_path,
+                "reconnect_account",
+                json!({"accountId": parsed.positional[0]}),
+            )
         }
         "remove" => {
             let parsed = parse_tail(&arguments, &[])?;

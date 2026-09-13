@@ -17,6 +17,7 @@ opens a unified calendar when clicked.
 - Uses the desktop's normal URL launcher for Firefox, Chrome, Chromium, and other defaults.
 - Opens from cached agenda data immediately; network sync runs in the background or on demand.
 - Lets an abandoned Google sign-in be cancelled immediately with the **×** action.
+- Marks expired Google grants and reconnects each affected account without deleting cached events.
 - Stores refresh tokens in Secret Service, not in the plugin or SQLite cache.
 - Uses a native Rust service with incremental calendar sync and expired
   sync-token recovery.
@@ -45,6 +46,10 @@ omarchy plugin add https://github.com/shivam-g10/omarchy-google-calendar.git --e
 
 Then follow [Google OAuth setup](docs/google-oauth.md) and click **+** in the
 calendar panel to connect each account.
+
+While the Google app remains in Testing, Calendar and Tasks grants expire after
+seven days. Select an affected account, then use **Sign in again** in the error
+banner.
 
 ## Update
 

@@ -47,6 +47,18 @@ Cancel a pending terminal or panel sign-in with:
 omarchy-calendar cancel
 ```
 
+When a Testing authorization expires, the account is marked in the panel.
+Select it, then use **Sign in again** in the error banner. Reconnection replaces
+only that account's token and keeps its cached events. The equivalent terminal
+command is:
+
+```bash
+omarchy-calendar reconnect ACCOUNT_ID
+```
+
+Testing authorizations continue to expire every seven days. Repeat reconnection
+as needed, or move the OAuth consent screen to Production for persistent grants.
+
 Useful diagnostics:
 
 ```bash
