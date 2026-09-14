@@ -10,6 +10,7 @@ calendar_binary="${calendar_cache_root}/release/omarchy-calendar"
 calendar_installed_binary="${calendar_bin_dir}/omarchy-calendar"
 calendar_runtime_dir="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 calendar_socket="${calendar_runtime_dir}/omarchy-calendar.sock"
+calendar_skill_dir="${CODEX_HOME:-${HOME}/.codex}/skills/omarchy-calendar"
 
 for calendar_command in cargo pkg-config secret-tool systemctl xdg-open; do
   if ! command -v "${calendar_command}" >/dev/null 2>&1; then
@@ -37,6 +38,10 @@ install -Dm0644 \
   "${calendar_repo_root}/systemd/omarchy-calendar.service" \
   "${calendar_unit_dir}/omarchy-calendar.service"
 
+install -Dm0644 \
+  "${calendar_repo_root}/skills/omarchy-calendar/SKILL.md" \
+  "${calendar_skill_dir}/SKILL.md"
+
 systemctl --user daemon-reload
 systemctl --user enable omarchy-calendar.service
 systemctl --user restart omarchy-calendar.service
@@ -52,4 +57,4 @@ if [[ ! -S "${calendar_socket}" ]]; then
   exit 1
 fi
 
-echo "Omarchy calendar backend installed and running."
+echo "Omarchy calendar backend installed and running. Agent skill installed at ${calendar_skill_dir}."
