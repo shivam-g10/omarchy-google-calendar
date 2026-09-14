@@ -13,6 +13,11 @@ Calendar and Tasks access is **read-only**. Event and task editing are not suppo
 
 ## Install
 
+**Ask your Omarchy agent:**
+
+> Install https://github.com/shivam-g10/omarchy-google-calendar using its README.
+> Help me connect my Google accounts.
+
 Requires Omarchy with plugin support, Rust/Cargo (edition 2024), SQLite,
 `pkg-config`, `secret-tool` (libsecret), `xdg-open` (xdg-utils), a browser,
 and a user systemd session.
@@ -41,6 +46,9 @@ Google OAuth apps in Testing can require sign-in again after seven days.
 See [setup details](docs/google-oauth.md).
 
 ## Agent and CLI access
+
+Ask your local agent: **“What does my day look like?”** or **“When is X's
+birthday?”** Birthdays must be present in a connected calendar.
 
 ```bash
 omarchy-calendar agenda list       # Today's events and tasks
