@@ -58,56 +58,125 @@ fn require_positionals(
     Ok(())
 }
 
-fn help(command: Option<&str>) {
-    let detail = match command {
-        Some("daemon") => "daemon",
-        Some("status") => "status",
-        Some("list") => "list [--start DATE] [--end DATE] [--account ID]",
-        Some("add") => "add [--label LABEL]",
-        Some("reconnect") => "reconnect ACCOUNT_ID",
-        Some("cancel") => "cancel",
-        Some("remove") => "remove ACCOUNT_ID",
-        Some("refresh") => "refresh [--account ID]",
-        Some("open") => "open ITEM_ID",
-        _ => {
-            println!(
-                "Omarchy calendar backend\n\nCommands:\n  daemon\n  status\n  list [--start DATE] [--end DATE] [--account ID]\n  add [--label LABEL]\n  reconnect ACCOUNT_ID\n  cancel\n  remove ACCOUNT_ID\n  refresh [--account ID]\n  open ITEM_ID"
-            );
-            return;
+const COMMANDS: &[(&str, &str, &str)] = &[
+    ("account list", "accounts", ""),
+    ("account add", "add", "[--label LABEL]"),
+    ("account reconnect", "reconnect", "ACCOUNT_ID"),
+    ("account cancel", "cancel", ""),
+    ("account remove", "remove", "ACCOUNT_ID"),
+    (
+        "event list",
+        "events",
+        "[--start DATE] [--end DATE] [--account ID]",
+    ),
+    ("event open", "event-open", "ITEM_ID"),
+    (
+        "task list",
+        "tasks",
+        "[--start DATE] [--end DATE] [--account ID]",
+    ),
+    ("task open", "task-open", "ITEM_ID"),
+    (
+        "agenda list",
+        "list",
+        "[--start DATE] [--end DATE] [--account ID]",
+    ),
+    ("service status", "status", ""),
+    ("service refresh", "refresh", "[--account ID]"),
+    ("service run", "daemon", ""),
+];
+
+fn help(prefix: &str) {
+    println!("Omarchy calendar backend\n\nCommands:");
+    for (name, _, options) in COMMANDS {
+        if prefix.is_empty() || *name == prefix || name.starts_with(&format!("{prefix} ")) {
+            println!("  {name} {options}");
         }
-    };
-    println!("Usage: omarchy-calendar {detail}");
+    }
+}
+
+fn route(arguments: &[String]) -> Result<Vec<String>, CalendarError> {
+    let name = arguments
+        .iter()
+        .take(2)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let (_, internal, _) = COMMANDS
+        .iter()
+        .find(|(public, _, _)| *public == name)
+        .ok_or_else(|| {
+            CalendarError::new(
+                "invalid_command",
+                format!("Unknown command: {name}. Use omarchy-calendar --help"),
+            )
+        })?;
+    let mut result = vec![internal.to_string()];
+    result.extend_from_slice(&arguments[2..]);
+    Ok(result)
 }
 
 fn command() -> Result<Value, CalendarError> {
-    let arguments: Vec<String> = env::args().skip(1).collect();
-    let command = arguments.first().map(String::as_str).unwrap_or("daemon");
-    if matches!(command, "help" | "--help" | "-h") {
-        help(None);
+    let raw: Vec<String> = env::args().skip(1).collect();
+    if raw.is_empty() || matches!(raw[0].as_str(), "help" | "--help" | "-h") {
+        help("");
         return Ok(Value::Null);
     }
+    if raw.len() == 1
+        && COMMANDS
+            .iter()
+            .any(|(name, _, _)| name.starts_with(&format!("{} ", raw[0])))
+    {
+        help(&raw[0]);
+        return Ok(Value::Null);
+    }
+    if raw.len() == 2
+        && matches!(raw[1].as_str(), "--help" | "-h")
+        && COMMANDS
+            .iter()
+            .any(|(name, _, _)| name.starts_with(&format!("{} ", raw[0])))
+    {
+        help(&raw[0]);
+        return Ok(Value::Null);
+    }
+    let arguments = route(&raw)?;
+    let command = arguments[0].as_str();
     if arguments
         .iter()
         .skip(1)
-        .any(|argument| matches!(argument.as_str(), "--help" | "-h"))
+        .any(|arg| matches!(arg.as_str(), "--help" | "-h"))
     {
-        help(Some(command));
+        help(&raw[..2].join(" "));
         return Ok(Value::Null);
     }
+    let public = raw[..2].join(" ");
+    let options = COMMANDS
+        .iter()
+        .find(|(name, _, _)| *name == public)
+        .unwrap()
+        .2;
+    let usage = format!("omarchy-calendar {public} {options}");
     if command == "daemon" {
-        require_positionals(&parse_tail(&arguments, &[])?, 0, "omarchy-calendar daemon")?;
-        let exit_code = run_daemon()?;
-        std::process::exit(exit_code);
+        require_positionals(&parse_tail(&arguments, &[])?, 0, &usage)?;
+        std::process::exit(run_daemon()?);
     }
-    let (_, _, socket_path) = default_paths()?;
+    let request = |method: &str, params: Value| {
+        let (_, _, socket_path) = default_paths()?;
+        send_request(&socket_path, method, params)
+    };
     match command {
-        "status" => {
-            require_positionals(&parse_tail(&arguments, &[])?, 0, "omarchy-calendar status")?;
-            send_request(&socket_path, "get_state", json!({}))
+        "status" | "accounts" => {
+            require_positionals(&parse_tail(&arguments, &[])?, 0, &usage)?;
+            let state = request("get_state", json!({}))?;
+            if command == "accounts" {
+                Ok(json!({"accounts": state["accounts"]}))
+            } else {
+                Ok(state)
+            }
         }
-        "list" => {
+        "list" | "events" | "tasks" => {
             let parsed = parse_tail(&arguments, &["--start", "--end", "--account"])?;
-            require_positionals(&parsed, 0, "omarchy-calendar list [options]")?;
+            require_positionals(&parsed, 0, &usage)?;
             let today = Local::now().date_naive();
             let start = parsed
                 .options
@@ -124,65 +193,79 @@ fn command() -> Result<Value, CalendarError> {
                 .get("--account")
                 .cloned()
                 .unwrap_or_else(|| "all".into());
-            send_request(
-                &socket_path,
+            let mut result = request(
                 "get_agenda",
                 json!({"start": start, "end": end, "account": account}),
-            )
+            )?;
+            filter_items(&mut result, command);
+            Ok(result)
         }
         "add" => {
             let parsed = parse_tail(&arguments, &["--label"])?;
-            require_positionals(&parsed, 0, "omarchy-calendar add [--label LABEL]")?;
+            require_positionals(&parsed, 0, &usage)?;
             let mut parameters = Map::new();
             if let Some(label) = parsed.options.get("--label") {
                 parameters.insert("label".into(), Value::String(label.clone()));
             }
-            send_request(&socket_path, "add_account", Value::Object(parameters))
+            request("add_account", Value::Object(parameters))
         }
         "cancel" => {
-            require_positionals(&parse_tail(&arguments, &[])?, 0, "omarchy-calendar cancel")?;
-            send_request(&socket_path, "cancel_add_account", json!({}))
+            require_positionals(&parse_tail(&arguments, &[])?, 0, &usage)?;
+            request("cancel_add_account", json!({}))
         }
         "reconnect" => {
             let parsed = parse_tail(&arguments, &[])?;
-            require_positionals(&parsed, 1, "omarchy-calendar reconnect ACCOUNT_ID")?;
-            send_request(
-                &socket_path,
+            require_positionals(&parsed, 1, &usage)?;
+            request(
                 "reconnect_account",
                 json!({"accountId": parsed.positional[0]}),
             )
         }
         "remove" => {
             let parsed = parse_tail(&arguments, &[])?;
-            require_positionals(&parsed, 1, "omarchy-calendar remove ACCOUNT_ID")?;
-            send_request(
-                &socket_path,
-                "remove_account",
-                json!({"accountId": parsed.positional[0]}),
-            )
+            require_positionals(&parsed, 1, &usage)?;
+            request("remove_account", json!({"accountId": parsed.positional[0]}))
         }
         "refresh" => {
             let parsed = parse_tail(&arguments, &["--account"])?;
-            require_positionals(&parsed, 0, "omarchy-calendar refresh [--account ID]")?;
+            require_positionals(&parsed, 0, &usage)?;
             let mut parameters = Map::new();
             if let Some(account) = parsed.options.get("--account") {
                 parameters.insert("accountId".into(), Value::String(account.clone()));
             }
-            send_request(&socket_path, "refresh", Value::Object(parameters))
+            request("refresh", Value::Object(parameters))
         }
-        "open" => {
+        "event-open" | "task-open" => {
             let parsed = parse_tail(&arguments, &[])?;
-            require_positionals(&parsed, 1, "omarchy-calendar open ITEM_ID")?;
-            send_request(
-                &socket_path,
-                "open_item",
-                json!({"itemId": parsed.positional[0]}),
-            )
+            require_positionals(&parsed, 1, &usage)?;
+            let expected = if command == "event-open" {
+                "event:"
+            } else {
+                "task:"
+            };
+            if !parsed.positional[0].starts_with(expected) {
+                return Err(CalendarError::new(
+                    "invalid_params",
+                    format!("Expected {expected} item ID"),
+                ));
+            }
+            request("open_item", json!({"itemId": parsed.positional[0]}))
         }
         other => Err(CalendarError::new(
             "invalid_command",
             format!("Unknown command: {other}"),
         )),
+    }
+}
+
+fn filter_items(result: &mut Value, command: &str) {
+    let kind = match command {
+        "events" => "event",
+        "tasks" => "task",
+        _ => return,
+    };
+    if let Some(items) = result["items"].as_array_mut() {
+        items.retain(|item| item["type"] == kind);
     }
 }
 
@@ -204,5 +287,53 @@ fn main() {
             );
             std::process::exit(1);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn namespaces_route_without_crossing_resource_boundaries() {
+        for (public, internal, _) in COMMANDS {
+            let args = public
+                .split_whitespace()
+                .map(str::to_owned)
+                .collect::<Vec<_>>();
+            assert_eq!(route(&args).unwrap(), vec![internal.to_string()]);
+        }
+        for invalid in [
+            "add",
+            "remove",
+            "list",
+            "event add",
+            "task remove",
+            "agenda open",
+        ] {
+            let args = invalid
+                .split_whitespace()
+                .map(str::to_owned)
+                .collect::<Vec<_>>();
+            assert_eq!(route(&args).unwrap_err().code, "invalid_command");
+        }
+        let args = ["account", "remove", "account-1"].map(str::to_owned);
+        assert_eq!(route(&args).unwrap(), vec!["remove", "account-1"]);
+    }
+
+    #[test]
+    fn typed_lists_preserve_context_and_source_records() {
+        let mixed = json!({"items": [{"type":"event","id":"event:1"},{"type":"task","id":"task:2"}],"context":{"accounts":[]},"start":"2026-09-14"});
+        for (command, kind) in [("events", "event"), ("tasks", "task")] {
+            let mut result = mixed.clone();
+            filter_items(&mut result, command);
+            assert_eq!(result["items"].as_array().unwrap().len(), 1);
+            assert_eq!(result["items"][0]["type"], kind);
+            assert_eq!(result["context"], mixed["context"]);
+            assert_eq!(result["start"], mixed["start"]);
+        }
+        let mut result = mixed.clone();
+        filter_items(&mut result, "list");
+        assert_eq!(result, mixed);
     }
 }

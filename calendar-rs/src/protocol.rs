@@ -486,16 +486,32 @@ fn wait_or_stop(control: &Arc<(Mutex<bool>, Condvar)>, timeout: Duration) -> boo
     *stopped
 }
 
+fn connection_error(error: io::Error) -> CalendarError {
+    if error.kind() == io::ErrorKind::PermissionDenied {
+        CalendarError::new(
+            "daemon_access_denied",
+            "Access to calendar daemon socket denied. The caller's sandbox or permissions may block local socket access.",
+        )
+    } else if matches!(
+        error.kind(),
+        io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
+    ) {
+        CalendarError::new(
+            "daemon_unavailable",
+            "Calendar daemon socket is missing or not accepting connections",
+        )
+    } else {
+        CalendarError::new(
+            "daemon_unavailable",
+            format!("Could not connect to calendar daemon: {error}"),
+        )
+    }
+}
+
 pub fn send_request(socket_path: &Path, method: &str, parameters: Value) -> Result<Value> {
     let request_id = Uuid::new_v4().to_string();
     let request = json!({"id": request_id, "method": method, "params": parameters});
-    let mut stream = UnixStream::connect(socket_path).map_err(|error| {
-        if error.kind() == io::ErrorKind::NotFound {
-            CalendarError::new("daemon_unavailable", "Calendar daemon is not running")
-        } else {
-            CalendarError::new("daemon_unavailable", "Could not connect to calendar daemon")
-        }
-    })?;
+    let mut stream = UnixStream::connect(socket_path).map_err(connection_error)?;
     stream
         .set_read_timeout(Some(Duration::from_secs(310)))
         .map_err(|_| {
@@ -559,6 +575,27 @@ pub fn send_request(socket_path: &Path, method: &str, parameters: Value) -> Resu
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn socket_access_denied_is_not_reported_as_stopped_daemon() {
+        for errno in [libc::EPERM, libc::EACCES] {
+            assert_eq!(
+                connection_error(io::Error::from_raw_os_error(errno)).code,
+                "daemon_access_denied"
+            );
+        }
+        for errno in [libc::ENOENT, libc::ECONNREFUSED] {
+            assert_eq!(
+                connection_error(io::Error::from_raw_os_error(errno)).code,
+                "daemon_unavailable"
+            );
+        }
+        assert!(
+            connection_error(io::Error::from_raw_os_error(libc::EMFILE))
+                .message
+                .contains("Too many open files")
+        );
+    }
 
     #[test]
     fn line_reader_rejects_oversized_messages() {

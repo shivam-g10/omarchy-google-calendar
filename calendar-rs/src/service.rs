@@ -190,7 +190,37 @@ impl CalendarService {
             })
             .transpose()?
             .unwrap_or("all");
-        self.database.agenda(start, end, account)
+        let mut accounts = self.database.configured_accounts()?;
+        if account != "all" {
+            accounts.retain(|row| row.account_id == account);
+            if accounts.is_empty() {
+                return Err(CalendarError::new(
+                    "account_not_found",
+                    "Google account was not found",
+                ));
+            }
+        }
+        let syncing = self.syncing.lock().expect("sync state poisoned").clone();
+        let context_accounts: Vec<Value> = accounts
+            .into_iter()
+            .map(|row| {
+                json!({
+                    "id": row.account_id,
+                    "label": row.label,
+                    "enabled": row.enabled,
+                    "syncing": syncing.contains(&row.account_id),
+                    "lastSync": row.last_sync,
+                    "errorCode": row.error_code,
+                    "error": row.error,
+                })
+            })
+            .collect();
+        let mut agenda = self.database.agenda(start, end, account)?;
+        agenda["context"] = json!({
+            "configured": self.google.configured(),
+            "accounts": context_accounts,
+        });
+        Ok(agenda)
     }
 
     pub fn add_account(&self, parameters: &Value) -> Result<Value> {

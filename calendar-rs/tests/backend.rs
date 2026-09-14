@@ -29,6 +29,7 @@ fn fixture(name: &str) -> Value {
 struct FakeSecrets {
     values: Mutex<HashMap<String, String>>,
     fail_store: Mutex<bool>,
+    lookup_calls: AtomicUsize,
 }
 
 impl SecretStoreApi for FakeSecrets {
@@ -47,6 +48,7 @@ impl SecretStoreApi for FakeSecrets {
     }
 
     fn lookup(&self, account_id: &str) -> Result<String> {
+        self.lookup_calls.fetch_add(1, Ordering::SeqCst);
         self.values
             .lock()
             .unwrap()
@@ -73,6 +75,8 @@ struct FakeGoogle {
     seen_tokens: Mutex<Vec<Option<String>>>,
     revoked: Mutex<Vec<String>>,
     authorize_calls: AtomicUsize,
+    refresh_calls: AtomicUsize,
+    refresh_gate: Mutex<Option<AuthorizationGate>>,
     authorization_gate: Mutex<Option<AuthorizationGate>>,
     authorization_error: Mutex<Option<CalendarError>>,
     authorization_subject: Mutex<String>,
@@ -96,6 +100,8 @@ impl FakeGoogle {
             seen_tokens: Mutex::new(Vec::new()),
             revoked: Mutex::new(Vec::new()),
             authorize_calls: AtomicUsize::new(0),
+            refresh_calls: AtomicUsize::new(0),
+            refresh_gate: Mutex::new(None),
             authorization_gate: Mutex::new(None),
             authorization_error: Mutex::new(None),
             authorization_subject: Mutex::new("google-subject-1".into()),
@@ -171,6 +177,11 @@ impl GoogleApi for FakeGoogle {
     }
 
     fn refresh_access_token(&self, refresh_token: &str) -> Result<String> {
+        self.refresh_calls.fetch_add(1, Ordering::SeqCst);
+        if let Some(gate) = self.refresh_gate.lock().unwrap().take() {
+            gate.started.send(()).unwrap();
+            gate.release.recv().unwrap();
+        }
         if refresh_token != "refresh-token-never-cache" {
             return Err(CalendarError::new("test_error", "unexpected refresh token"));
         }
@@ -295,6 +306,94 @@ impl Harness {
             .store(account_id, "refresh-token-never-cache")
             .unwrap();
     }
+}
+
+#[test]
+fn cached_reads_include_passive_context_and_never_refresh() {
+    let harness = Harness::new();
+    let query = json!({"start": "2026-08-31", "end": "2026-09-01"});
+    let empty = harness.service.agenda(&query).unwrap();
+    assert_eq!(empty["context"]["accounts"], json!([]));
+    harness.add_database_account("account-1");
+    let initial = harness.service.agenda(&query).unwrap();
+    assert!(initial["context"]["accounts"][0]["lastSync"].is_null());
+    assert_eq!(harness.secrets.lookup_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(harness.google.refresh_calls.load(Ordering::SeqCst), 0);
+
+    harness.service.refresh(&json!({})).unwrap();
+    let healthy = harness.service.agenda(&query).unwrap();
+    assert_eq!(healthy["context"]["configured"], true);
+    let last_sync = healthy["context"]["accounts"][0]["lastSync"].clone();
+    assert!(last_sync.is_string());
+    harness
+        .database
+        .set_sync_result(
+            "account-1",
+            Some("credentials_expired"),
+            Some("Sign in again"),
+        )
+        .unwrap();
+    harness
+        .database
+        .upsert_account("account-2", "subject-2", "two@example.com", "Work")
+        .unwrap();
+    let before = harness.secrets.lookup_calls.load(Ordering::SeqCst);
+    for _ in 0..10 {
+        let result = harness.service.agenda(&query).unwrap();
+        assert_eq!(result["items"], healthy["items"]);
+        assert_eq!(result["context"]["accounts"][0]["lastSync"], last_sync);
+        assert_eq!(
+            result["context"]["accounts"][0]["errorCode"],
+            "credentials_expired"
+        );
+        assert_eq!(result["context"]["accounts"].as_array().unwrap().len(), 2);
+    }
+    assert_eq!(harness.secrets.lookup_calls.load(Ordering::SeqCst), before);
+    assert_eq!(harness.google.refresh_calls.load(Ordering::SeqCst), 1);
+    let filtered = harness
+        .service
+        .agenda(&json!({"start":"2026-08-31", "end":"2026-09-01", "account":"account-2"}))
+        .unwrap();
+    assert_eq!(filtered["items"], json!([]));
+    assert_eq!(filtered["context"]["accounts"].as_array().unwrap().len(), 1);
+    assert_eq!(filtered["context"]["accounts"][0]["id"], "account-2");
+    assert_eq!(
+        harness
+            .service
+            .agenda(&json!({"start":"2026-08-31", "end":"2026-09-01", "account":"missing"}))
+            .unwrap_err()
+            .code,
+        "account_not_found"
+    );
+}
+
+#[test]
+fn cached_read_does_not_wait_for_inflight_refresh() {
+    let harness = Harness::new();
+    harness.add_database_account("account-1");
+    let (started_tx, started_rx) = mpsc::sync_channel(1);
+    let (release_tx, release_rx) = mpsc::channel();
+    *harness.google.refresh_gate.lock().unwrap() = Some(AuthorizationGate {
+        started: started_tx,
+        release: release_rx,
+    });
+    let service = harness.service.clone();
+    let refresh = thread::spawn(move || service.refresh(&json!({})));
+    started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+    let service = harness.service.clone();
+    let (result_tx, result_rx) = mpsc::channel();
+    let read = thread::spawn(move || {
+        result_tx
+            .send(service.agenda(&json!({"start":"2026-08-31", "end":"2026-09-01"})))
+            .unwrap();
+    });
+    let result = result_rx.recv_timeout(Duration::from_secs(2));
+    release_tx.send(()).unwrap();
+    refresh.join().unwrap().unwrap();
+    read.join().unwrap();
+    let result = result.expect("cached read waited for refresh").unwrap();
+    assert_eq!(result["context"]["accounts"][0]["syncing"], true);
+    assert_eq!(harness.google.refresh_calls.load(Ordering::SeqCst), 1);
 }
 
 #[test]

@@ -712,6 +712,33 @@ mod tests {
     use super::*;
     use std::net::TcpListener;
 
+    // Drain the body before closing so the test server cannot reset a POST connection.
+    fn read_test_request(stream: &mut TcpStream) -> String {
+        stream
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        let mut header = Vec::new();
+        while !header.ends_with(b"\r\n\r\n") {
+            let mut byte = [0];
+            stream.read_exact(&mut byte).unwrap();
+            header.push(byte[0]);
+            assert!(header.len() <= 16 * 1024);
+        }
+        let header = String::from_utf8(header).unwrap();
+        let length = header
+            .lines()
+            .find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                name.eq_ignore_ascii_case("content-length")
+                    .then(|| value.trim().parse::<usize>().unwrap())
+            })
+            .unwrap_or(0);
+        assert!(length <= 16 * 1024);
+        let mut body = vec![0; length];
+        stream.read_exact(&mut body).unwrap();
+        header + &String::from_utf8(body).unwrap()
+    }
+
     #[test]
     fn path_encoding_matches_google_contract() {
         assert_eq!(
@@ -808,9 +835,7 @@ mod tests {
         let address = listener.local_addr().unwrap();
         let server = thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
-            let mut request = [0_u8; 2048];
-            let count = stream.read(&mut request).unwrap();
-            let request = String::from_utf8_lossy(&request[..count]);
+            let request = read_test_request(&mut stream);
             assert!(request.starts_with("POST /revoke HTTP/1.1"));
             assert!(!request.contains("refresh-token\r\n"));
             stream
@@ -828,9 +853,8 @@ mod tests {
         let address = listener.local_addr().unwrap();
         let server = thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
-            let mut request = [0_u8; 2048];
-            let count = stream.read(&mut request).unwrap();
-            assert!(String::from_utf8_lossy(&request[..count]).starts_with("POST /token HTTP/1.1"));
+            let request = read_test_request(&mut stream);
+            assert!(request.starts_with("POST /token HTTP/1.1"));
             let body = br#"{"error":"invalid_grant","error_description":"Token has been expired or revoked."}"#;
             write!(
                 stream,
