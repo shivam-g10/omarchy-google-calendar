@@ -50,6 +50,8 @@ See [setup details](docs/google-oauth.md).
 Ask your local agent: **“What does my day look like?”** or **“When is X's
 birthday?”** Birthdays must be present in a connected calendar.
 
+![Local agent checking today's agenda and upcoming birthdays](docs/agent-calendar.png)
+
 ```bash
 omarchy-calendar agenda list       # Today's events and tasks
 omarchy-calendar event list        # Events only
