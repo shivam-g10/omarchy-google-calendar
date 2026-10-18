@@ -1,10 +1,10 @@
 import QtQuick
 import Quickshell
 import Quickshell.Io
+import "Model.js" as Model
 
-// Shared calendar state for every bar instance. omarchy-shell creates it
-// once because the manifest declares a keepLoaded service; bar widgets only
-// retrieve it through shell.serviceFor("shivam.clock").
+// Calendar state and socket client. The built-in bar uses the shell's shared
+// keepLoaded instance; replacement bars share a separate fallback singleton.
 Item {
   id: root
 
@@ -30,7 +30,7 @@ Item {
 
   property var accounts: []
   property var items: []
-  property date selectedDate: new Date()
+  property string selectedDate: Model.keyForDate(new Date())
   property string accountFilter: "all"
   readonly property string selectedAccountId: accountFilter
   property string agendaStart: ""
@@ -50,53 +50,19 @@ Item {
   signal backendConnected()
   signal backendDisconnected()
 
-  function pad2(value) {
-    return value < 10 ? "0" + value : String(value)
-  }
-
-  function localDate(value) {
-    if (value instanceof Date) {
-      if (!isNaN(value.getTime()))
-        return new Date(value.getFullYear(), value.getMonth(), value.getDate())
-      return null
-    }
-
-    var text = String(value || "")
-    var match = /^(\d{4})-(\d{2})-(\d{2})/.exec(text)
-    if (match) {
-      var parsed = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]))
-      if (parsed.getFullYear() === Number(match[1])
-          && parsed.getMonth() === Number(match[2]) - 1
-          && parsed.getDate() === Number(match[3])) return parsed
-      return null
-    }
-
-    var fallback = new Date(value)
-    if (isNaN(fallback.getTime())) return null
-    return new Date(fallback.getFullYear(), fallback.getMonth(), fallback.getDate())
-  }
-
   function dateKey(value) {
-    var date = localDate(value)
-    if (!date) return ""
-    return date.getFullYear() + "-" + pad2(date.getMonth() + 1) + "-" + pad2(date.getDate())
-  }
-
-  function addLocalDays(value, days) {
-    var date = localDate(value)
-    if (!date) return null
-    date.setDate(date.getDate() + days)
-    return date
+    var text = value instanceof Date ? Model.keyForDate(value) : String(value || "")
+    var match = /^(\d{4}-\d{2}-\d{2})/.exec(text)
+    var key = match ? match[1] : Model.normalizedDateKey(value, "")
+    return Model.civilDate(key) ? key : ""
   }
 
   function monthRange(value) {
-    var date = localDate(value) || new Date()
+    var date = Model.civilDate(dateKey(value) || Model.keyForDate(new Date()))
     // Seven-day shoulders cover any locale's six-week calendar grid.
-    var start = new Date(date.getFullYear(), date.getMonth(), 1)
-    start.setDate(start.getDate() - 7)
-    var end = new Date(date.getFullYear(), date.getMonth() + 1, 1)
-    end.setDate(end.getDate() + 7)
-    return { start: dateKey(start), end: dateKey(end) }
+    var start = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), -6))
+    var end = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 8))
+    return { start: Model.keyForCivilDate(start), end: Model.keyForCivilDate(end) }
   }
 
   function selectedRangeLoaded() {
@@ -106,11 +72,11 @@ Item {
   }
 
   function selectDate(value) {
-    var date = localDate(value)
-    if (!date) return false
-    selectedDate = date
+    var key = dateKey(value)
+    if (key === "") return false
+    selectedDate = key
     if (!selectedRangeLoaded()) {
-      var range = monthRange(date)
+      var range = monthRange(key)
       loadRange(range.start, range.end)
     }
     return true

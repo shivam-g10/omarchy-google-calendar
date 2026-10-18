@@ -3,6 +3,7 @@ import Quickshell
 import qs.Commons
 import qs.Ui
 import "Model.js" as Model
+import "I18n.js" as I18n
 
 // Multi-account calendar popup. QML owns presentation only; an injected
 // service owns OAuth, secrets, synchronization, and the private event cache.
@@ -35,7 +36,7 @@ Panel {
   property string selectedDateKey: todayKey
   property string requestedRange: ""
 
-  readonly property date viewDate: new Date(viewYear, viewMonth, 1)
+  readonly property date viewDate: new Date(viewYear, viewMonth, 15, 12)
   readonly property bool viewingCurrentMonth: viewYear === today.getFullYear() && viewMonth === today.getMonth()
 
   // Pinned to today, not to the month being browsed — stepping through the
@@ -59,10 +60,7 @@ Panel {
   // convention. Clicking the grid's "W" heading writes the choice back to
   // shell.json.
   readonly property int weekStart: Model.normalizedWeekStart(setting("weekStartDay", null), Qt.locale().firstDayOfWeek)
-  // The interface is English throughout, so day names are not taken from the
-  // system locale. Where the week starts still is: that is a regional
-  // convention rather than a translation, and it stays overridable above.
-  readonly property var labelLocale: Qt.locale("en_US")
+  readonly property var labelLocale: Qt.locale(I18n.localeName(setting("uiLanguage", ""), Qt.locale().name))
   readonly property string nextWeekStartLabel: labelLocale.dayName(Model.toggledWeekStart(weekStart), Locale.LongFormat)
   readonly property var weekdays: Model.weekdayOrder(weekStart)
   readonly property var weeks: Model.monthGrid(viewYear, viewMonth, weekStart, todayKey)
@@ -73,7 +71,7 @@ Panel {
     ? String(actualService.status)
     : "unavailable"
   readonly property string serviceError: actualService && actualService.error !== undefined
-    ? String(actualService.error || "")
+    ? root.tr(String(actualService.error || ""))
     : ""
   readonly property bool backendConnected: !!actualService && actualService.connected === true
   readonly property bool addingAccount: !!actualService && actualService.addingAccount === true
@@ -108,7 +106,12 @@ Panel {
   readonly property var reconnectTargetAccount: selectedNeedsReconnect ? selectedAccount : null
   readonly property bool reconnectBannerEnabled: reconnectTargetAccount !== null
     && backendConnected && !addingAccount && !cancellingAccount && !oauthFinishing
-  readonly property var agendaItems: Model.agendaItemsForDay(serviceItems, selectedDateKey, accountFilter)
+  readonly property string firstVisibleDate: weeks[0].days[0].key
+  readonly property string lastVisibleDate: weeks[5].days[6].key
+  readonly property var agendaIndex: Model.agendaIndex(serviceItems, firstVisibleDate, lastVisibleDate, accountFilter)
+  readonly property var agendaItems: agendaIndex[selectedDateKey]
+    ? agendaIndex[selectedDateKey].items
+    : Model.agendaItemsForDay(serviceItems, selectedDateKey, accountFilter)
   readonly property date selectedDate: dateFromKey(selectedDateKey)
 
 
@@ -125,17 +128,25 @@ Panel {
 
   readonly property bool wideLayout: panel.width >= Style.space(700)
 
+  function tr(source, values) {
+    return I18n.translate(labelLocale.name, source, values)
+  }
+
+  function itemCountText(count) {
+    return root.tr(count === 1 ? "{count} item" : "{count} items", { count: count })
+  }
+
   function dateFromKey(key) {
-    var parts = String(key || "").split("-")
-    if (parts.length !== 3) return new Date(root.today.getFullYear(), root.today.getMonth(), root.today.getDate())
-    return new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]))
+    return Model.civilDate(key) || Model.civilDate(root.todayKey)
   }
 
   function selectedDateLabel() {
     var date = root.selectedDate
-    return root.labelLocale.dayName(date.getDay(), Locale.LongFormat)
-      + ", " + Model.ordinalDay(date.getDate())
-      + " " + root.labelLocale.monthName(date.getMonth(), Locale.LongFormat)
+    return root.tr("{weekday}, {day} {month}", {
+      weekday: root.labelLocale.dayName(date.getUTCDay(), Locale.LongFormat),
+      day: Model.ordinalDay(date.getUTCDate(), root.labelLocale.name),
+      month: root.labelLocale.monthName(date.getUTCMonth(), Locale.LongFormat)
+    })
   }
 
   function syncSelectionFromService() {
@@ -164,7 +175,7 @@ Panel {
     if (!root.actualService || !root.weeks || root.weeks.length === 0) return
     var first = root.weeks[0].days[0].key
     var lastCell = root.weeks[root.weeks.length - 1].days[6]
-    var exclusiveEnd = Model.keyForDate(new Date(lastCell.year, lastCell.month, lastCell.day + 1))
+    var exclusiveEnd = Model.keyForCivilDate(new Date(Date.UTC(lastCell.year, lastCell.month, lastCell.day + 1)))
     var token = first + "/" + exclusiveEnd
     if (token === root.requestedRange) return
     root.requestedRange = token
@@ -199,14 +210,15 @@ Panel {
 
   function reconnectBannerText() {
     if (root.reconnectTargetAccount) {
-      var accountName = String(root.reconnectTargetAccount.email || root.reconnectTargetAccount.label || "Google account")
+      var accountName = String(root.reconnectTargetAccount.email || root.reconnectTargetAccount.label || root.tr("Google account"))
       if (root.reconnectingAccountId === String(root.reconnectTargetAccount.id || ""))
-        return "Complete Google sign-in for " + accountName + " in your browser."
-      return "Google access expired for " + accountName + "."
+        return root.tr("Complete Google sign-in for {account} in your browser.", { account: accountName })
+      return root.tr("Google access expired for {account}.", { account: accountName })
     }
-    return "Google access expired for " + root.reconnectCount + " account"
-      + (root.reconnectCount === 1 ? "" : "s")
-      + ". Select an affected account to sign in again."
+    return root.tr(root.reconnectCount === 1
+      ? "Google access expired for {count} account. Select an affected account to sign in again."
+      : "Google access expired for {count} accounts. Select an affected account to sign in again.",
+      { count: root.reconnectCount })
   }
 
   function removeSelectedAccount() {
@@ -229,38 +241,38 @@ Panel {
   }
 
   function serviceStatusText() {
-    if (!root.actualService) return "Calendar service unavailable"
+    if (!root.actualService) return root.tr("Calendar service unavailable")
     var accountCount = root.serviceAccounts.length
-    var prefix = accountCount + " account" + (accountCount === 1 ? "" : "s")
-    if (!root.backendConnected || root.serviceStatus === "connecting") return prefix + " · connecting…"
-    if (root.cancellingAccount) return "Cancelling Google sign-in…"
-    if (root.reconnectingAccountId !== "") return "Reconnecting Google account…"
-    if (root.oauthFinishing) return "Finishing Google sign-in…"
-    if (root.addingAccount && root.oauthCancelable) return "Waiting for Google sign-in…"
-    if (root.addingAccount) return "Opening Google sign-in…"
-    if (root.openingItemId !== "") return "Opening event…"
-    if (root.serviceStatus === "not_configured") return "Google OAuth setup needed"
-    if (root.serviceStatus === "empty") return "No accounts connected"
-    if (root.serviceBusy) return prefix + " · syncing…"
-    if (root.serviceStatus === "offline") return prefix + " · cached offline"
-    if (root.serviceError !== "" || root.serviceStatus === "error") return prefix + " · sync issue"
-    return prefix + " · synced"
+    var prefix = root.tr(accountCount === 1 ? "{count} account" : "{count} accounts", { count: accountCount })
+    if (!root.backendConnected || root.serviceStatus === "connecting") return prefix + " · " + root.tr("connecting…")
+    if (root.cancellingAccount) return root.tr("Cancelling Google sign-in…")
+    if (root.reconnectingAccountId !== "") return root.tr("Reconnecting Google account…")
+    if (root.oauthFinishing) return root.tr("Finishing Google sign-in…")
+    if (root.addingAccount && root.oauthCancelable) return root.tr("Waiting for Google sign-in…")
+    if (root.addingAccount) return root.tr("Opening Google sign-in…")
+    if (root.openingItemId !== "") return root.tr("Opening event…")
+    if (root.serviceStatus === "not_configured") return root.tr("Google OAuth setup needed")
+    if (root.serviceStatus === "empty") return root.tr("No accounts connected")
+    if (root.serviceBusy) return prefix + " · " + root.tr("syncing…")
+    if (root.serviceStatus === "offline") return prefix + " · " + root.tr("cached offline")
+    if (root.serviceError !== "" || root.serviceStatus === "error") return prefix + " · " + root.tr("sync issue")
+    return prefix + " · " + root.tr("synced")
   }
 
   function emptyAgendaText() {
-    if (!root.actualService) return "Calendar service unavailable"
-    if (!root.backendConnected || root.serviceStatus === "connecting") return "Connecting to calendar…"
-    if (root.serviceStatus === "not_configured") return "Google setup required"
-    if (root.serviceStatus === "empty") return "Connect a Google account"
-    return "Nothing scheduled"
+    if (!root.actualService) return root.tr("Calendar service unavailable")
+    if (!root.backendConnected || root.serviceStatus === "connecting") return root.tr("Connecting to calendar…")
+    if (root.serviceStatus === "not_configured") return root.tr("Google setup required")
+    if (root.serviceStatus === "empty") return root.tr("Connect a Google account")
+    return root.tr("Nothing scheduled")
   }
 
   function agendaTime(item) {
     if (!item) return ""
-    if (String(item.type || "event").toLowerCase() === "task") return "Due today"
-    if (item.allDay === true) return "All day"
+    if (String(item.type || "event").toLowerCase() === "task") return root.tr("Due today")
+    if (item.allDay === true) return root.tr("All day")
     var start = new Date(item.start)
-    return isNaN(start.getTime()) ? "" : Qt.formatTime(start, "HH:mm")
+    return isNaN(start.getTime()) ? "" : start.toLocaleTimeString(root.labelLocale, "HH:mm")
   }
 
   function agendaSource(item) {
@@ -278,9 +290,9 @@ Panel {
     if (calendar !== "" && calendar !== source) parts.push(calendar)
     var location = String(item.location || "")
     if (location !== "") parts.push(location)
-    var reminders = Model.reminderSummary(item.reminders)
+    var reminders = Model.reminderSummary(item.reminders, root.tr)
     if (reminders !== "") parts.push("󰂚 " + reminders)
-    if (String(item.type || "event").toLowerCase() === "task") parts.push("Google Tasks · date only")
+    if (String(item.type || "event").toLowerCase() === "task") parts.push(root.tr("Google Tasks · date only"))
     return parts.join(" · ")
   }
 
@@ -348,7 +360,7 @@ Panel {
   function moveMonth(delta) {
     var next = Model.stepMonth(viewYear, viewMonth, delta)
     var selected = root.dateFromKey(root.selectedDateKey)
-    var targetDay = Math.min(selected.getDate(), new Date(next.year, next.month + 1, 0).getDate())
+    var targetDay = Math.min(selected.getUTCDate(), new Date(Date.UTC(next.year, next.month + 1, 0)).getUTCDate())
     root.viewYear = next.year
     root.viewMonth = next.month
     root.selectDateKey(Model.dateKey(next.year, next.month, targetDay))
@@ -369,8 +381,8 @@ Panel {
     for (var existing in root.settings) if (existing !== "id") entry[existing] = root.settings[existing]
     for (var key in values) entry[key] = values[key]
 
-    root.settings = entry
     if (root.hostWidget && "settings" in root.hostWidget) root.hostWidget.settings = entry
+    else root.settings = entry
     if (root.bar && root.bar.shell && typeof root.bar.shell.updateEntryInline === "function")
       root.bar.shell.updateEntryInline(root.moduleName, entry)
   }
@@ -432,7 +444,7 @@ Panel {
     setWeekStart(Model.toggledWeekStart(root.weekStart))
   }
 
-  // English short day names, matching the rest of the interface.
+  // Short day names follow the widget language.
   function weekdayLabel(weekday) {
     return String(labelLocale.dayName(weekday, Locale.ShortFormat)).toUpperCase()
   }
@@ -530,7 +542,7 @@ Panel {
 
               Text {
                 id: calendarTitle
-                text: "Calendar"
+                text: root.tr("Calendar")
                 color: root.contentForeground
                 font.family: root.contentFontFamily
                 font.pixelSize: Style.font.title
@@ -557,7 +569,7 @@ Panel {
 
               PanelActionButton {
                 iconText: "󰑐"
-                tooltipText: "Refresh calendars"
+                tooltipText: root.tr("Refresh calendars")
                 foreground: root.contentForeground
                 fontFamily: root.contentFontFamily
                 enabled: root.backendConnected && root.serviceAccounts.length > 0 && !root.serviceBusy
@@ -567,12 +579,12 @@ Panel {
               PanelActionButton {
                 iconText: root.oauthCancelable ? "×" : "+"
                 tooltipText: root.cancellingAccount
-                  ? "Cancelling Google sign-in…"
+                  ? root.tr("Cancelling Google sign-in…")
                   : (root.oauthFinishing
-                    ? "Finishing Google sign-in…"
+                    ? root.tr("Finishing Google sign-in…")
                     : (root.oauthCancelable
-                      ? "Cancel Google sign-in"
-                      : (root.addingAccount ? "Opening Google sign-in…" : "Add Google account")))
+                      ? root.tr("Cancel Google sign-in")
+                      : (root.addingAccount ? root.tr("Opening Google sign-in…") : root.tr("Add Google account"))))
                 foreground: root.contentForeground
                 fontFamily: root.contentFontFamily
                 enabled: root.backendConnected && !root.cancellingAccount && !root.oauthFinishing
@@ -586,7 +598,7 @@ Panel {
               PanelActionButton {
                 visible: root.accountFilter !== "all"
                 iconText: "󰆴"
-                tooltipText: "Remove selected account"
+                tooltipText: root.tr("Remove selected account")
                 foreground: root.contentForeground
                 hoverColor: root.bar ? root.bar.urgent : Color.urgent
                 fontFamily: root.contentFontFamily
@@ -636,7 +648,7 @@ Panel {
                 enabled: root.reconnectBannerEnabled
                 anchors.verticalCenter: parent.verticalCenter
                 z: 2
-                text: root.reconnectingAccountId !== "" ? "Complete sign-in" : "Sign in again →"
+                text: root.reconnectingAccountId !== "" ? root.tr("Complete sign-in") : root.tr("Sign in again →")
                 bordered: true
                 focusable: true
                 foreground: root.contentForeground
@@ -665,7 +677,7 @@ Panel {
             spacing: Style.space(6)
 
             Button {
-              text: "All accounts"
+              text: root.tr("All accounts")
               selected: root.accountFilter === "all"
               bordered: true
               foreground: root.contentForeground
@@ -720,7 +732,7 @@ Panel {
 
                   Text {
                     anchors.verticalCenter: parent.verticalCenter
-                    text: String(modelData.label || modelData.email || "Account")
+                    text: String(modelData.label || modelData.email || root.tr("Account"))
                     textFormat: Text.PlainText
                     color: accountChipRow.parent.chosen
                       ? Style.selectedStateColor(root.contentForeground, accountChipRow.parent.accountColor)
@@ -769,7 +781,7 @@ Panel {
                   id: compactMonthLabel
                   anchors.left: parent.left
                   anchors.verticalCenter: parent.verticalCenter
-                  text: Qt.formatDate(root.viewDate, "MMMM yyyy")
+                  text: root.viewDate.toLocaleDateString(root.labelLocale, "MMMM yyyy")
                   textFormat: Text.PlainText
                   color: root.contentForeground
                   font.family: root.contentFontFamily
@@ -784,7 +796,7 @@ Panel {
 
                   PanelActionButton {
                     iconText: "󰅁"
-                    tooltipText: "Previous month"
+                    tooltipText: root.tr("Previous month")
                     foreground: root.contentForeground
                     fontFamily: root.contentFontFamily
                     onClicked: root.moveMonth(-1)
@@ -792,7 +804,7 @@ Panel {
 
                   PanelActionButton {
                     iconText: "󰅂"
-                    tooltipText: "Next month"
+                    tooltipText: root.tr("Next month")
                     foreground: root.contentForeground
                     fontFamily: root.contentFontFamily
                     onClicked: root.moveMonth(1)
@@ -833,7 +845,7 @@ Panel {
                 id: heroDate
                 textFormat: Text.PlainText
                 anchors.verticalCenter: parent.verticalCenter
-                text: Qt.formatDate(root.today, "MMMM d")
+                text: root.today.toLocaleDateString(root.labelLocale, "MMMM d")
                 color: heroMouse.containsMouse
                   ? Style.hoverStateColor(root.contentForeground, Color.accent)
                   : root.contentForeground
@@ -856,7 +868,7 @@ Panel {
 
               PanelToolTip {
                 visible: heroMouse.containsMouse
-                text: "Back to today"
+                text: root.tr("Back to today")
                 fontFamily: root.contentFontFamily
               }
             }
@@ -889,7 +901,7 @@ Panel {
 
                 Text {
                   anchors.verticalCenter: parent.verticalCenter
-                  text: "BORN"
+                  text: root.tr("BORN")
                   color: Qt.darker(root.contentForeground, 1.5)
                   font.family: root.contentFontFamily
                   font.pixelSize: Style.font.bodySmall
@@ -900,7 +912,7 @@ Panel {
                   id: bornField
                   width: Style.space(70)
                   anchors.verticalCenter: parent.verticalCenter
-                  placeholderText: "year"
+                  placeholderText: root.tr("year")
                   foreground: root.contentForeground
                   font.family: root.contentFontFamily
                   inputMethodHints: Qt.ImhDigitsOnly
@@ -912,7 +924,7 @@ Panel {
                   anchors.verticalCenter: parent.verticalCenter
                   anchors.verticalCenterOffset: 0
                   leftPadding: Style.space(6)
-                  text: "LIVE TO"
+                  text: root.tr("LIVE TO")
                   color: Qt.darker(root.contentForeground, 1.5)
                   font.family: root.contentFontFamily
                   font.pixelSize: Style.font.bodySmall
@@ -999,7 +1011,7 @@ Panel {
                 id: lifeLabel
                 anchors.left: parent.left
                 anchors.verticalCenter: parent.verticalCenter
-                text: "LIFE"
+                text: root.tr("LIFE")
                 color: Qt.darker(root.contentForeground, 1.5)
                 font.family: root.contentFontFamily
                 font.pixelSize: Style.font.bodySmall
@@ -1049,7 +1061,7 @@ Panel {
 
                 PanelToolTip {
                   visible: lifeMouse.containsMouse
-                  text: "Memento Mori"
+                  text: root.tr("Memento Mori")
                   fontFamily: root.contentFontFamily
                 }
               }
@@ -1098,7 +1110,7 @@ Panel {
 
                   Text {
                     anchors.centerIn: parent
-                    text: "W"
+                    text: root.tr("W")
                     color: weekStartMouse.containsMouse
                       ? Style.hoverStateColor(root.contentForeground, Color.accent)
                       : Qt.darker(root.contentForeground, 1.9)
@@ -1118,7 +1130,7 @@ Panel {
 
                   PanelToolTip {
                     visible: weekStartMouse.containsMouse
-                    text: "Start weeks on " + root.nextWeekStartLabel
+                    text: root.tr("Start weeks on {day}", { day: root.nextWeekStartLabel })
                     fontFamily: root.contentFontFamily
                   }
                 }
@@ -1179,7 +1191,8 @@ Panel {
                       id: dayCell
                       required property var modelData
                       readonly property bool selectedCell: modelData.key === root.selectedDateKey
-                      readonly property var dotColors: Model.dayDotColors(root.serviceItems, modelData.key, root.accountFilter, 3)
+                      readonly property var dayAgenda: root.agendaIndex[modelData.key]
+                      readonly property var dotColors: dayAgenda ? dayAgenda.colors : []
 
                       width: root.cellWidth
                       height: root.cellHeight
@@ -1240,8 +1253,7 @@ Panel {
 
                       PanelToolTip {
                         visible: dayCellMouse.containsMouse
-                        text: Model.agendaItemsForDay(root.serviceItems, modelData.key, root.accountFilter).length
-                          + " item(s)"
+                        text: root.itemCountText(dayCell.dayAgenda ? dayCell.dayAgenda.count : 0)
                         fontFamily: root.contentFontFamily
                       }
                     }
@@ -1288,7 +1300,7 @@ Panel {
                 // "MAY 2026" and a "SEPTEMBER 2026".
                 width: Style.space(130)
                 horizontalAlignment: Text.AlignHCenter
-                text: Qt.formatDate(root.viewDate, "MMMM yyyy").toUpperCase()
+                text: root.viewDate.toLocaleDateString(root.labelLocale, "MMMM yyyy").toUpperCase()
                 color: Qt.darker(root.contentForeground, 1.4)
                 font.family: root.contentFontFamily
                 font.pixelSize: Style.font.body
@@ -1302,7 +1314,7 @@ Panel {
                 anchors.leftMargin: -Style.space(8)
                 anchors.verticalCenter: parent.verticalCenter
                 iconText: "󰅁"
-                tooltipText: "Previous month"
+                tooltipText: root.tr("Previous month")
                 foreground: root.contentForeground
                 fontFamily: root.contentFontFamily
                 onClicked: root.moveMonth(-1)
@@ -1313,7 +1325,7 @@ Panel {
                 anchors.rightMargin: -Style.space(8)
                 anchors.verticalCenter: parent.verticalCenter
                 iconText: "󰅂"
-                tooltipText: "Next month"
+                tooltipText: root.tr("Next month")
                 foreground: root.contentForeground
                 fontFamily: root.contentFontFamily
                 onClicked: root.moveMonth(1)
@@ -1364,7 +1376,7 @@ Panel {
                     id: agendaCount
                     anchors.right: parent.right
                     anchors.verticalCenter: parent.verticalCenter
-                    text: root.agendaItems.length + " item" + (root.agendaItems.length === 1 ? "" : "s")
+                    text: root.itemCountText(root.agendaItems.length)
                     textFormat: Text.PlainText
                     color: Qt.darker(root.contentForeground, 1.5)
                     font.family: root.contentFontFamily
@@ -1451,7 +1463,7 @@ Panel {
 
                           Text {
                             width: Math.max(0, parent.width - Style.space(13))
-                            text: String(modelData.title || "Untitled")
+                            text: String(modelData.title || root.tr("Untitled"))
                             textFormat: Text.PlainText
                             elide: Text.ElideRight
                             color: root.contentForeground
@@ -1463,7 +1475,7 @@ Panel {
 
                         Text {
                           width: parent.width
-                          text: agendaItemContent.parent.openingItem ? "Opening event…" : root.agendaMeta(modelData)
+                          text: agendaItemContent.parent.openingItem ? root.tr("Opening event…") : root.agendaMeta(modelData)
                           textFormat: Text.PlainText
                           color: agendaItemContent.parent.openingItem
                             ? Style.selectedStateColor(root.contentForeground, agendaItemContent.parent.sourceColor)
@@ -1489,7 +1501,7 @@ Panel {
 
                     PanelToolTip {
                       visible: agendaItemMouse.containsMouse
-                      text: parent.openingItem ? "Opening event…" : String(modelData.title || "Untitled")
+                      text: parent.openingItem ? root.tr("Opening event…") : String(modelData.title || root.tr("Untitled"))
                       fontFamily: root.contentFontFamily
                     }
                   }
@@ -1499,7 +1511,7 @@ Panel {
                   visible: root.actualService !== null
                   width: parent.width
                   topPadding: Style.space(3)
-                  text: root.serviceStatus === "offline" ? "Cached offline · Tasks are date-only" : "Tasks are date-only"
+                  text: root.serviceStatus === "offline" ? root.tr("Cached offline · Tasks are date-only") : root.tr("Tasks are date-only")
                   textFormat: Text.PlainText
                   color: Qt.darker(root.contentForeground, 1.65)
                   font.family: root.contentFontFamily

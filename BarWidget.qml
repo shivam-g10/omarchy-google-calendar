@@ -3,7 +3,10 @@ import Quickshell
 import Quickshell.Io
 import qs.Commons
 import qs.Ui
+import "." as Calendar
 import "Model.js" as Model
+import "services" as Services
+import "I18n.js" as I18n
 
 // Date/time label for the bar, and the host for the calendar popup.
 //
@@ -14,10 +17,18 @@ BarWidget {
   id: root
   moduleName: "shivam.clock"
 
-  readonly property var calendarService: root.bar && root.bar.shell
-    && typeof root.bar.shell.serviceFor === "function"
-      ? root.bar.shell.serviceFor(root.moduleName)
-      : null
+  readonly property var calendarService: {
+    var shell = root.bar && root.bar.shell
+    if (!shell) return null
+    // Omarchy's service-less facades still expose serviceFor(), but their
+    // _serviceLookup callback is null. A pending shared service must stay null.
+    if (typeof shell.serviceFor === "function"
+        && !("_serviceLookup" in shell && shell._serviceLookup === null))
+      return shell.serviceFor(root.moduleName)
+    return Services.FallbackCalendarService
+  }
+
+  readonly property var labelLocale: Qt.locale(I18n.localeName(setting("uiLanguage", ""), Qt.locale().name))
 
   property date displayDate: clock.date
 
@@ -45,6 +56,7 @@ BarWidget {
     displayDate = new Date()
     if (panelLoader.item && panelLoader.item.refreshFromGoogle)
       panelLoader.item.refreshFromGoogle()
+    else if (root.calendarService) root.calendarService.refresh()
   }
 
   function cycleFormat() {
@@ -64,8 +76,9 @@ BarWidget {
   }
 
   function formatted(date) {
-    var format = activeFormat.replace(/\{ordinal\}/g, "'" + Model.ordinalDay(date.getDate()) + "'")
-    return Qt.formatDateTime(date, format.replace(/ww/g, Model.isoWeekLiteral(date.getFullYear(), date.getMonth(), date.getDate())))
+    var format = activeFormat.replace(/\{ordinal\}/g, "'" + Model.ordinalDay(date.getDate(), labelLocale.name) + "'")
+    // The Date overload preserves custom patterns; Qt.formatDateTime(date, locale, pattern) does not.
+    return date.toLocaleString(labelLocale, format.replace(/ww/g, Model.isoWeekLiteral(date.getFullYear(), date.getMonth(), date.getDate())))
   }
 
   // ---- Calendar popup. Shape contract for shell.summon/hide/toggle
@@ -74,6 +87,7 @@ BarWidget {
   readonly property bool opened: panelLoader.item ? panelLoader.item.opened === true : false
 
   function open() {
+    panelLoader.active = true
     if (panelLoader.item) panelLoader.item.open()
   }
 
@@ -82,10 +96,12 @@ BarWidget {
   }
 
   function togglePanel() {
-    if (panelLoader.item) panelLoader.item.toggle()
+    if (root.opened) root.close()
+    else root.open()
   }
 
   function toggleWeekStart() {
+    panelLoader.active = true
     if (panelLoader.item) panelLoader.item.toggleWeekStart()
   }
 
@@ -106,25 +122,8 @@ BarWidget {
     if (panelLoader.item) panelLoader.item.closeForPopoutSwitch()
   }
 
-  function injectPanel() {
-    var target = panelLoader.item
-    if (!target) return
-    if ("moduleName" in target) target.moduleName = root.moduleName
-    if ("ipcTarget" in target) target.ipcTarget = root.moduleName
-    if ("bar" in target) target.bar = root.bar
-    if ("settings" in target) target.settings = root.settings
-    if ("anchorItem" in target) target.anchorItem = button
-    if ("hostWidget" in target) target.hostWidget = root
-    if ("calendarService" in target) target.calendarService = root.calendarService
-    if ("service" in target) target.service = root.calendarService
-  }
-
   implicitWidth: button.implicitWidth
   implicitHeight: button.implicitHeight
-
-  onBarChanged: injectPanel()
-  onSettingsChanged: injectPanel()
-  onCalendarServiceChanged: injectPanel()
 
   SystemClock {
     id: clock
@@ -134,12 +133,16 @@ BarWidget {
 
   Loader {
     id: panelLoader
-    active: true
-    source: Qt.resolvedUrl("Panel.qml")
+    active: false
     visible: false
-    onLoaded: {
-      root.injectPanel()
-      Qt.callLater(root.injectPanel)
+    sourceComponent: Calendar.Panel {
+      moduleName: root.moduleName
+      ipcTarget: root.moduleName
+      bar: root.bar
+      settings: root.settings
+      anchorItem: button
+      hostWidget: root
+      calendarService: root.calendarService
     }
   }
 

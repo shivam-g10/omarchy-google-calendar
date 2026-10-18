@@ -77,9 +77,10 @@ function pad2(value) {
   return (n < 10 ? "0" : "") + n
 }
 
-// English ordinal label for the custom {ordinal} bar-format token.
-function ordinalDay(value) {
+// English ordinals for the custom {ordinal} token; other locales use the day number.
+function ordinalDay(value, locale) {
   var day = Number(value)
+  if (locale && !/^en(?:[-_]|$)/i.test(String(locale)) && locale !== "C") return String(day)
   var remainder = day % 100
   var suffix = "th"
 
@@ -100,6 +101,21 @@ function dateKey(year, month, day) {
 
 function keyForDate(date) {
   return dateKey(date.getFullYear(), date.getMonth(), date.getDate())
+}
+
+// Date-only values use UTC solely for Gregorian arithmetic. They do not
+// represent an event instant and must be read with the UTC getters.
+function civilDate(key) {
+  var match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(key || ""))
+  if (!match) return null
+  var year = Number(match[1]), month = Number(match[2]) - 1, day = Number(match[3])
+  var date = new Date(Date.UTC(year, month, day))
+  return date.getUTCFullYear() === year && date.getUTCMonth() === month
+    && date.getUTCDate() === day ? date : null
+}
+
+function keyForCivilDate(date) {
+  return dateKey(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate())
 }
 
 // Turn either a Date or an ISO date/date-time into the local day identity used
@@ -123,17 +139,70 @@ function dateOnlyKey(value) {
   return match ? match[1] : ""
 }
 
+// Resolve a local day boundary. A midnight can occur twice or not at all,
+// and Qt's Date constructor can resolve a gap to the prior day.
+function localDayBoundary(civilMidnight) {
+  var before = new Date(civilMidnight - MS_PER_DAY).getTimezoneOffset()
+  var after = new Date(civilMidnight + MS_PER_DAY).getTimezoneOffset()
+  var low = civilMidnight + Math.min(before, after) * 60000
+  var high = civilMidnight + Math.max(before, after) * 60000
+  if (low === high) return { first: low }
+  var first = new Date(low)
+  var firstDay = Date.UTC(first.getFullYear(), first.getMonth(), first.getDate())
+  var firstIsMidnight = firstDay === civilMidnight && first.getHours() === 0 && first.getMinutes() === 0
+  var last = new Date(high)
+  var lastDay = Date.UTC(last.getFullYear(), last.getMonth(), last.getDate())
+  var lastIsMidnight = lastDay === civilMidnight && last.getHours() === 0 && last.getMinutes() === 0
+  if (firstIsMidnight && lastIsMidnight && low < high) {
+    // A rollback just after midnight can briefly enter this date, return to
+    // the previous date, then enter it again at the second midnight.
+    var left = low, right = high
+    var offset = first.getTimezoneOffset()
+    while (left < right) {
+      var probe = Math.floor((left + right) / 2)
+      if (new Date(probe).getTimezoneOffset() === offset) left = probe + 1
+      else right = probe
+    }
+    return { first: low, last: high, rollback: left }
+  }
+  if (firstIsMidnight) return { first: low }
+  if (lastIsMidnight) return { first: high }
+  // Only a missing midnight reaches this path. This also leaves a skipped
+  // civil day with identical start and end bounds rather than inventing time.
+  while (low < high) {
+    var middle = Math.floor((low + high) / 2)
+    var date = new Date(middle)
+    var day = Date.UTC(date.getFullYear(), date.getMonth(), date.getDate())
+    if (day < civilMidnight) low = middle + 1
+    else high = middle
+  }
+  return { first: low }
+}
+
 function localDayBounds(key) {
-  var match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(key || ""))
-  if (!match) return null
-  var start = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]))
-  var end = new Date(start.getFullYear(), start.getMonth(), start.getDate() + 1)
-  return { start: start.getTime(), end: end.getTime() }
+  var date = civilDate(key)
+  if (!date) return null
+  var midnight = date.getTime()
+  var from = localDayBoundary(midnight)
+  var to = localDayBoundary(midnight + MS_PER_DAY)
+  var splitStart = from.rollback !== undefined && from.rollback < from.last
+  var splitEnd = to.rollback !== undefined && to.rollback < to.last
+  if (!splitStart && !splitEnd) return { start: from.first, end: to.first }
+
+  var intervals = []
+  var start = from.first
+  if (splitStart) {
+    intervals.push({ start: start, end: from.rollback })
+    start = from.last
+  }
+  if (start < to.first) intervals.push({ start: start, end: to.first })
+  if (splitEnd) intervals.push({ start: to.rollback, end: to.last })
+  return { start: from.first, end: splitEnd ? to.last : to.first, intervals: intervals }
 }
 
 // Google all-day event ends are exclusive. Timed events are matched by local
 // overlap so a meeting crossing midnight appears on both affected dates.
-function itemOccursOnDate(item, key) {
+function itemOccursOnDate(item, key, dayBounds) {
   if (!item) return false
   var selected = String(key || "")
   if (selected === "") return false
@@ -151,11 +220,18 @@ function itemOccursOnDate(item, key) {
     return selected >= allDayStart && (allDayEnd === "" ? selected === allDayStart : selected < allDayEnd)
   }
 
-  var bounds = localDayBounds(selected)
+  var bounds = dayBounds || localDayBounds(selected)
   var start = new Date(item.start)
-  if (!bounds || isNaN(start.getTime())) return false
+  if (!bounds || bounds.start >= bounds.end || isNaN(start.getTime())) return false
   var end = new Date(item.end)
   var endMs = isNaN(end.getTime()) ? start.getTime() + 1 : Math.max(start.getTime() + 1, end.getTime())
+  if (bounds.intervals) {
+    for (var i = 0; i < bounds.intervals.length; i++) {
+      var interval = bounds.intervals[i]
+      if (start.getTime() < interval.end && endMs > interval.start) return true
+    }
+    return false
+  }
   return start.getTime() < bounds.end && endMs > bounds.start
 }
 
@@ -190,16 +266,17 @@ function appendUnique(target, value) {
   if (text !== "" && target.indexOf(text) === -1) target.push(text)
 }
 
-function agendaItemsForDay(items, key, accountFilter) {
+function agendaItemsForDay(items, key, accountFilter, dayBounds) {
   var source = items && typeof items.length === "number" ? items : []
   var filter = String(accountFilter || "all")
+  var bounds = dayBounds || localDayBounds(key)
   var out = []
   var sharedEvents = {}
   for (var i = 0; i < source.length; i++) {
     var item = source[i]
     if (!item) continue
     if (filter !== "all" && String(item.accountId || "") !== filter) continue
-    if (!itemOccursOnDate(item, key)) continue
+    if (!itemOccursOnDate(item, key, bounds)) continue
 
     var type = String(item.type || "event").toLowerCase()
     var sharedKey = type === "event" && item.icalUid
@@ -225,7 +302,10 @@ function agendaItemsForDay(items, key, accountFilter) {
 }
 
 function dayDotColors(items, key, accountFilter, limit) {
-  var matching = agendaItemsForDay(items, key, accountFilter)
+  return agendaDotColors(agendaItemsForDay(items, key, accountFilter), limit)
+}
+
+function agendaDotColors(matching, limit) {
   var maximum = Math.max(0, Math.round(Number(limit === undefined ? 3 : limit)))
   var seen = {}
   var colors = []
@@ -243,11 +323,64 @@ function dayDotColors(items, key, accountFilter, limit) {
   return colors
 }
 
-function reminderOffsetLabel(value) {
+// Bucket once per visible range, then prepare each day's display data once.
+// UTC is used only to count calendar dates; timed events retain local dates.
+function agendaIndex(items, firstKey, lastKey, accountFilter) {
+  var first = Date.parse(firstKey + "T00:00:00Z")
+  var last = Date.parse(lastKey + "T00:00:00Z")
+  var days = []
+  var result = {}
+  for (var day = first; day <= last; day += MS_PER_DAY) {
+    var key = keyForCivilDate(new Date(day))
+    days.push({ key: key, bounds: localDayBounds(key), items: [] })
+  }
+
+  var filter = String(accountFilter || "all")
+  var source = items || []
+  for (var i = 0; i < source.length; i++) {
+    var item = source[i]
+    if (!item || (filter !== "all" && String(item.accountId || "") !== filter)) continue
+    var startKey, endKey
+    var exclusiveEnd = false
+    if (String(item.type || "event").toLowerCase() === "task") {
+      startKey = endKey = dateOnlyKey(item.dueDate || item.start)
+    } else if (item.allDay === true) {
+      startKey = dateOnlyKey(item.start)
+      endKey = dateOnlyKey(item.end) || startKey
+      exclusiveEnd = dateOnlyKey(item.end) !== ""
+    } else {
+      var start = new Date(item.start).getTime()
+      if (!isFinite(start)) continue
+      var end = new Date(item.end).getTime()
+      end = isFinite(end) ? Math.max(start + 1, end) : start + 1
+      // Local date can move backwards during a midnight clock rollback.
+      // Compare real instants against the precomputed visible day boundaries.
+      for (var d = 0; d < days.length; d++) {
+        var target = days[d]
+        if (start < target.bounds.end && end > target.bounds.start)
+          target.items.push(item)
+      }
+      continue
+    }
+    var from = Math.max(0, (Date.parse(startKey + "T00:00:00Z") - first) / MS_PER_DAY)
+    var through = Math.min(days.length - 1, (Date.parse(endKey + "T00:00:00Z") - first) / MS_PER_DAY - (exclusiveEnd ? 1 : 0))
+    for (var index = from; index <= through; index++) days[index].items.push(item)
+  }
+
+  for (var date = 0; date < days.length; date++) {
+    var entry = days[date]
+    // Deduplicate after overlap, so copies with different spans stay correct.
+    var matching = agendaItemsForDay(entry.items, entry.key, filter, entry.bounds)
+    result[entry.key] = { items: matching, count: matching.length, colors: agendaDotColors(matching, 3) }
+  }
+  return result
+}
+
+function reminderOffsetLabel(value, translate) {
   var minutes = Number(value)
   if (!isFinite(minutes) || minutes < 0) return ""
   minutes = Math.round(minutes)
-  if (minutes === 0) return "At start"
+  if (minutes === 0) return typeof translate === "function" ? translate("At start") : "At start"
   var days = Math.floor(minutes / 1440)
   var hours = Math.floor((minutes % 1440) / 60)
   var remainder = minutes % 60
@@ -255,19 +388,20 @@ function reminderOffsetLabel(value) {
   if (days > 0) parts.push(days + "d")
   if (hours > 0) parts.push(hours + "h")
   if (remainder > 0) parts.push(remainder + "m")
-  return parts.join(" ") + " before"
+  var offset = parts.join(" ")
+  return typeof translate === "function" ? translate("{offset} before", { offset: offset }) : offset + " before"
 }
 
-function reminderSummary(reminders) {
+function reminderSummary(reminders, translate) {
   if (reminders === undefined || reminders === null || reminders === "") return ""
   var source = Array.isArray(reminders) ? reminders : [reminders]
   var labels = []
   for (var i = 0; i < source.length; i++) {
     var reminder = source[i]
     var label = ""
-    if (typeof reminder === "number") label = reminderOffsetLabel(reminder)
+    if (typeof reminder === "number") label = reminderOffsetLabel(reminder, translate)
     else if (typeof reminder === "string") label = reminder
-    else if (reminder && reminder.minutes !== undefined) label = reminderOffsetLabel(reminder.minutes)
+    else if (reminder && reminder.minutes !== undefined) label = reminderOffsetLabel(reminder.minutes, translate)
     else if (reminder && reminder.label !== undefined) label = String(reminder.label)
     if (label !== "" && labels.indexOf(label) === -1) labels.push(label)
   }
@@ -408,8 +542,8 @@ function lifeProgressPercent(age, expectancy) {
 // panel jump under the pointer.
 function monthGrid(year, month, weekStart, todayKey) {
   var start = normalizedWeekStart(weekStart, 1)
-  var leading = (new Date(year, month, 1).getDay() - start + 7) % 7
-  var cursor = new Date(year, month, 1 - leading)
+  var leading = (new Date(Date.UTC(year, month, 1)).getUTCDay() - start + 7) % 7
+  var cursor = new Date(Date.UTC(year, month, 1 - leading))
   var today = String(todayKey || "")
   var weeks = []
 
@@ -417,10 +551,10 @@ function monthGrid(year, month, weekStart, todayKey) {
     var days = []
     var thursday = null
     for (var d = 0; d < 7; d++) {
-      var cellYear = cursor.getFullYear()
-      var cellMonth = cursor.getMonth()
-      var cellDay = cursor.getDate()
-      var weekday = cursor.getDay()
+      var cellYear = cursor.getUTCFullYear()
+      var cellMonth = cursor.getUTCMonth()
+      var cellDay = cursor.getUTCDate()
+      var weekday = cursor.getUTCDay()
       var key = dateKey(cellYear, cellMonth, cellDay)
       if (weekday === 4) thursday = { year: cellYear, month: cellMonth, day: cellDay }
       days.push({
@@ -433,7 +567,7 @@ function monthGrid(year, month, weekStart, todayKey) {
         weekend: weekday === 0 || weekday === 6,
         today: key === today
       })
-      cursor.setDate(cursor.getDate() + 1)
+      cursor.setUTCDate(cursor.getUTCDate() + 1)
     }
     // Number every row by the ISO week owning its Thursday. That is the
     // definition itself for Monday-start weeks, and the only answer that
@@ -449,18 +583,23 @@ function monthGrid(year, month, weekStart, todayKey) {
 }
 
 function stepMonth(year, month, delta) {
-  var target = new Date(year, Number(month) + Number(delta), 1)
-  return { year: target.getFullYear(), month: target.getMonth() }
+  var target = new Date(Date.UTC(year, Number(month) + Number(delta), 1))
+  return { year: target.getUTCFullYear(), month: target.getUTCMonth() }
 }
 
 if (typeof module !== "undefined") {
   module.exports = {
+    ordinalDay: ordinalDay,
     dateKey: dateKey,
     keyForDate: keyForDate,
+    civilDate: civilDate,
+    keyForCivilDate: keyForCivilDate,
+    localDayBounds: localDayBounds,
     normalizedDateKey: normalizedDateKey,
     itemOccursOnDate: itemOccursOnDate,
     agendaItemsForDay: agendaItemsForDay,
     dayDotColors: dayDotColors,
+    agendaIndex: agendaIndex,
     reminderOffsetLabel: reminderOffsetLabel,
     reminderSummary: reminderSummary,
     normalizedWeekStart: normalizedWeekStart,

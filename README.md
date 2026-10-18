@@ -42,6 +42,16 @@ user service and communicates over a private Unix socket.
 | Reconnect expired access | **Sign in again** |
 | Customize clock | Bar settings; try `dddd, {ordinal} MMM, HH:mm` |
 
+The widget follows the system locale. Set `uiLanguage` on the `shivam.clock` bar
+entry (for example, `"uiLanguage": "es_CL"`) to override it. UI translations include
+English (including `en_GB` / `en-GB`), Spanish, French, German, Portuguese, Hindi,
+Simplified Chinese, and Japanese.
+Portuguese uses one shared catalog; Traditional Chinese regions and other unsupported
+languages use English UI text with localized dates. Calendar content and external error
+details are not translated. Custom clock formats remain unchanged; `{ordinal}` uses
+suffixes only in English. Week start still follows the system or `weekStartDay`,
+independently of `uiLanguage`.
+
 Google OAuth apps in Testing can require sign-in again after seven days.
 See [setup details](docs/google-oauth.md).
 
@@ -91,13 +101,11 @@ The uninstaller removes the agent skill and preserves any user-added files in it
 
 ## Resource footprint
 
-Written in Rust to keep background RAM and CPU overhead low as desktop plugins accumulate.
-
-Daemon memory snapshot. Shared-shell UI excluded.
-
-| Memory measurement | MB |
-| --- | ---: |
-| Service memory (systemd) | 10.66 |
-| Proportional memory (PSS) | 10.21 |
+The panel loads on first use and reuses one agenda index for the visible dates.
+The built-in bar waits for the shell's shared calendar client. Replacement bars share
+one fallback client across all monitors. The fallback starts only when needed
+and remains until the shell's QML engine exits, even if the built-in bar is
+restored. It adds one socket connection and backend client thread, with no extra
+daemon or polling timer.
 
 [MIT license](LICENSE) · [Third-party notices](THIRD_PARTY_NOTICES)
