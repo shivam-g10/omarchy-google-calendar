@@ -20,11 +20,12 @@ BarWidget {
   readonly property var calendarService: {
     var shell = root.bar && root.bar.shell
     if (!shell) return null
-    var shared = typeof shell.serviceFor === "function"
-      ? shell.serviceFor(root.moduleName) : null
-    // Replacement bars cannot expose the shell-owned service. Share one
-    // fallback client across their widgets, including multiple monitors.
-    return shared || Services.FallbackCalendarService
+    // Omarchy's service-less facades still expose serviceFor(), but their
+    // _serviceLookup callback is null. A pending shared service must stay null.
+    if (typeof shell.serviceFor === "function"
+        && !("_serviceLookup" in shell && shell._serviceLookup === null))
+      return shell.serviceFor(root.moduleName)
+    return Services.FallbackCalendarService
   }
 
   readonly property var labelLocale: Qt.locale(I18n.localeName(setting("uiLanguage", ""), Qt.locale().name))

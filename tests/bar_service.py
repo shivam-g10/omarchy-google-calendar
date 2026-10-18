@@ -140,8 +140,18 @@ Item {
         }
     }
     QtObject { id: missingLookupShell }
-    QtObject { id: nullLookupShell; function serviceFor(id) { return null } }
+    QtObject {
+        id: nullLookupShell
+        property var _serviceLookup: null
+        function serviceFor(id) { return _serviceLookup ? _serviceLookup(id) : null }
+    }
+    QtObject {
+        id: scopedShell
+        property var _serviceLookup: function(id) { return providedShell.serviceFor(id) }
+        function serviceFor(id) { return _serviceLookup ? _serviceLookup(id) : null }
+    }
     QtObject { id: providedBar; property var shell: providedShell }
+    QtObject { id: scopedBar; property var shell: scopedShell }
     QtObject { id: providedBarCopy; property var shell: providedShell }
     QtObject { id: missingLookupBar; property var shell: missingLookupShell }
     QtObject { id: nullLookupBar; property var shell: nullLookupShell }
@@ -260,6 +270,40 @@ class BarServiceTests(unittest.TestCase):
         stage++
         """, 0)
 
+    def test_pending_shared_service_never_creates_fallback(self):
+        self.run_qml("""
+        if (stage === 0) {
+            providedShell.currentService = null
+            widgets = [create(providedBar), create(scopedBar)]
+        } else if (stage === 1) {
+            for (var item of widgets) {
+                check(item.calendarService === null, "wait for shared service at startup")
+                item.syncCalendars()
+                check(panel(item) === null, "refresh while loading does not create panel")
+                item.open()
+            }
+            providedShell.currentService = shared
+        } else if (stage === 2) {
+            for (var item of widgets) {
+                check(item.calendarService === shared, "late service updates the binding")
+                check(panel(item).calendarService === shared, "open panel receives late service")
+            }
+            providedShell.currentService = null
+        } else if (stage === 3) {
+            for (var item of widgets) {
+                check(item.calendarService === null, "service loss must not create fallback")
+                check(panel(item).calendarService === null, "panel follows service loss")
+            }
+            providedShell.currentService = replacementShared
+        } else if (stage === 4) {
+            for (var item of widgets)
+                check(item.calendarService === replacementShared, "service recovery updates the binding")
+            console.log("TEST_PASSED")
+            Qt.quit()
+        }
+        stage++
+        """, 0)
+
     def test_fallback_is_shared_and_survives_widget_lifecycle(self):
         self.run_qml("""
         if (stage === 0) {
@@ -269,7 +313,7 @@ class BarServiceTests(unittest.TestCase):
             widgets[0].syncCalendars()
             savedFallback = widgets[0].calendarService
             check(savedFallback && savedFallback.marker === "fallback", "missing lookup fallback")
-            check(widgets[1].calendarService === savedFallback, "null lookup shares one client")
+            check(widgets[1].calendarService === savedFallback, "service-less facade shares one client")
             check(savedFallback.refreshCalls === 1, "fallback refresh before first open")
             check(panel(widgets[0]) === null, "fallback refresh does not create panel")
             savedFallback.accountFilter = "retained"
@@ -296,7 +340,10 @@ class BarServiceTests(unittest.TestCase):
             check(panel(widgets[0]).calendarService === shared, "panel follows service replacement")
             providedShell.currentService = null
         } else if (stage === 6) {
-            check(widgets[0].calendarService === savedFallback, "lost service uses same fallback")
+            check(widgets[0].calendarService === null, "built-in bar waits for shared service")
+            widgets[0].bar = nullLookupBar
+        } else if (stage === 7) {
+            check(widgets[0].calendarService === savedFallback, "replacement bar reuses same fallback")
             console.log("TEST_PASSED")
             Qt.quit()
         }

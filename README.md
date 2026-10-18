@@ -102,7 +102,7 @@ The uninstaller removes the agent skill and preserves any user-added files in it
 ## Resource footprint
 
 The panel loads on first use and reuses one agenda index for the visible dates.
-The built-in bar uses the shell's shared calendar client. Replacement bars share
+The built-in bar waits for the shell's shared calendar client. Replacement bars share
 one fallback client across all monitors. The fallback starts only when needed
 and remains until the shell's QML engine exits, even if the built-in bar is
 restored. It adds one socket connection and backend client thread, with no extra
