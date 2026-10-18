@@ -102,17 +102,10 @@ The uninstaller removes the agent skill and preserves any user-added files in it
 ## Resource footprint
 
 The panel loads on first use and reuses one agenda index for the visible dates.
-An isolated, software-rendered Qt fixture with 1,000 events measured a 21 ms median
-agenda update. [Benchmarks, raw results, and reproduction commands](docs/benchmarks/README.md)
-cover startup, rendering, date/locale helpers, memory, and idle CPU.
-
-The built-in bar uses the shell's shared calendar client. Replacement bars cannot
-access that instance, so they share one fallback client across all monitors. The
-fallback starts only when needed and remains until the shell's QML engine exits,
-even if the built-in bar is restored. It adds one socket connection and backend
-client thread, with no extra daemon or polling timer. With 1,000 cached events,
-retaining both clients added about 4.84 MiB PSS in the isolated resource fixture.
-Measured connected idle CPU was 0–0.05% of one core over 20-second samples;
-this does not measure Google synchronization or live desktop/GPU rendering.
+The built-in bar uses the shell's shared calendar client. Replacement bars share
+one fallback client across all monitors. The fallback starts only when needed
+and remains until the shell's QML engine exits, even if the built-in bar is
+restored. It adds one socket connection and backend client thread, with no extra
+daemon or polling timer.
 
 [MIT license](LICENSE) · [Third-party notices](THIRD_PARTY_NOTICES)
