@@ -5,6 +5,7 @@ import qs.Commons
 import qs.Ui
 import "Model.js" as Model
 import "services" as Services
+import "I18n.js" as I18n
 
 // Date/time label for the bar, and the host for the calendar popup.
 //
@@ -24,6 +25,8 @@ BarWidget {
     // fallback client across their widgets, including multiple monitors.
     return shared || Services.FallbackCalendarService
   }
+
+  readonly property var labelLocale: Qt.locale(I18n.localeName(setting("uiLanguage", ""), Qt.locale().name))
 
   property date displayDate: clock.date
 
@@ -70,8 +73,9 @@ BarWidget {
   }
 
   function formatted(date) {
-    var format = activeFormat.replace(/\{ordinal\}/g, "'" + Model.ordinalDay(date.getDate()) + "'")
-    return Qt.formatDateTime(date, format.replace(/ww/g, Model.isoWeekLiteral(date.getFullYear(), date.getMonth(), date.getDate())))
+    var format = activeFormat.replace(/\{ordinal\}/g, "'" + Model.ordinalDay(date.getDate(), labelLocale.name) + "'")
+    // The Date overload preserves custom patterns; Qt.formatDateTime(date, locale, pattern) does not.
+    return date.toLocaleString(labelLocale, format.replace(/ww/g, Model.isoWeekLiteral(date.getFullYear(), date.getMonth(), date.getDate())))
   }
 
   // ---- Calendar popup. Shape contract for shell.summon/hide/toggle

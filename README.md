@@ -42,6 +42,11 @@ user service and communicates over a private Unix socket.
 | Reconnect expired access | **Sign in again** |
 | Customize clock | Bar settings; try `dddd, {ordinal} MMM, HH:mm` |
 
+The widget follows the system locale. Set `uiLanguage` on the `shivam.clock` bar
+entry (for example, `"uiLanguage": "es_CL"`) to override it. English and Spanish UI
+strings are included; other languages use English text with localized dates.
+Custom clock formats remain unchanged; `{ordinal}` uses suffixes only in English.
+
 Google OAuth apps in Testing can require sign-in again after seven days.
 See [setup details](docs/google-oauth.md).
 

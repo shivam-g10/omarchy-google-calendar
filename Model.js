@@ -77,9 +77,10 @@ function pad2(value) {
   return (n < 10 ? "0" : "") + n
 }
 
-// English ordinal label for the custom {ordinal} bar-format token.
-function ordinalDay(value) {
+// English ordinals for the custom {ordinal} token; other locales use the day number.
+function ordinalDay(value, locale) {
   var day = Number(value)
+  if (locale && !/^en(?:[-_]|$)/i.test(String(locale)) && locale !== "C") return String(day)
   var remainder = day % 100
   var suffix = "th"
 
@@ -332,11 +333,11 @@ function agendaIndex(items, firstKey, lastKey, accountFilter) {
   return result
 }
 
-function reminderOffsetLabel(value) {
+function reminderOffsetLabel(value, translate) {
   var minutes = Number(value)
   if (!isFinite(minutes) || minutes < 0) return ""
   minutes = Math.round(minutes)
-  if (minutes === 0) return "At start"
+  if (minutes === 0) return typeof translate === "function" ? translate("At start") : "At start"
   var days = Math.floor(minutes / 1440)
   var hours = Math.floor((minutes % 1440) / 60)
   var remainder = minutes % 60
@@ -344,19 +345,20 @@ function reminderOffsetLabel(value) {
   if (days > 0) parts.push(days + "d")
   if (hours > 0) parts.push(hours + "h")
   if (remainder > 0) parts.push(remainder + "m")
-  return parts.join(" ") + " before"
+  var offset = parts.join(" ")
+  return typeof translate === "function" ? translate("{offset} before", { offset: offset }) : offset + " before"
 }
 
-function reminderSummary(reminders) {
+function reminderSummary(reminders, translate) {
   if (reminders === undefined || reminders === null || reminders === "") return ""
   var source = Array.isArray(reminders) ? reminders : [reminders]
   var labels = []
   for (var i = 0; i < source.length; i++) {
     var reminder = source[i]
     var label = ""
-    if (typeof reminder === "number") label = reminderOffsetLabel(reminder)
+    if (typeof reminder === "number") label = reminderOffsetLabel(reminder, translate)
     else if (typeof reminder === "string") label = reminder
-    else if (reminder && reminder.minutes !== undefined) label = reminderOffsetLabel(reminder.minutes)
+    else if (reminder && reminder.minutes !== undefined) label = reminderOffsetLabel(reminder.minutes, translate)
     else if (reminder && reminder.label !== undefined) label = String(reminder.label)
     if (label !== "" && labels.indexOf(label) === -1) labels.push(label)
   }
@@ -544,6 +546,7 @@ function stepMonth(year, month, delta) {
 
 if (typeof module !== "undefined") {
   module.exports = {
+    ordinalDay: ordinalDay,
     dateKey: dateKey,
     keyForDate: keyForDate,
     civilDate: civilDate,

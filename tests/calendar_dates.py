@@ -30,6 +30,7 @@ class CalendarDateTests(unittest.TestCase):
     def test_qml_dates(self):
         self.assertIsNotNone(QML, "Qt QML runner required (qml6 or qml)")
         model_import = f'import {json.dumps((ROOT / "Model.js").as_uri())} as Model\n'
+        locale_import = f'import {json.dumps((ROOT / "I18n.js").as_uri())} as I18n\n'
         service = (ROOT / "CalendarService.qml").read_text()
         panel = (ROOT / "Panel.qml").read_text()
         # Isolate the real date methods from shell imports and socket startup.
@@ -43,7 +44,7 @@ class CalendarDateTests(unittest.TestCase):
             *[function(service, name) for name in (
                 "dateKey", "monthRange", "selectedRangeLoaded", "selectDate", "loadRange")],
         ]) + "\n}\n"
-        panel_probe = "import QtQml\n" + model_import + "QtObject {\nid: root\n" + "\n".join([
+        panel_probe = "import QtQml\n" + model_import + locale_import + "QtObject {\nid: root\n" + "\n".join([
             'property var actualService: null',
             'property string todayKey: "2026-09-01"',
             'property string selectedDateKey: "2026-09-06"',
@@ -55,7 +56,7 @@ class CalendarDateTests(unittest.TestCase):
             property_line(panel, "selectedDate"),
             property_line(panel, "weeks"),
             *[function(panel, name) for name in (
-                "dateFromKey", "selectedDateLabel", "selectDateKey", "requestRange", "moveMonth")],
+                "tr", "dateFromKey", "selectedDateLabel", "selectDateKey", "requestRange", "moveMonth")],
         ]) + "\n}\n"
         with tempfile.TemporaryDirectory(prefix="calendar-qml-dates-") as directory:
             path = Path(directory)
