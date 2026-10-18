@@ -20,7 +20,7 @@ def function(source, name):
 
 
 def property_line(source, name):
-    match = re.search(rf"^  (?:readonly )?property \w+ {name}:.*$", source, re.M)
+    match = re.search(rf"^  (?:readonly )?property \w+ {name}:.*(?:\n {{4}}.*)*", source, re.M)
     if not match:
         raise AssertionError(f"Missing production property: {name}")
     return match.group(0)
@@ -53,8 +53,12 @@ class CalendarDateTests(unittest.TestCase):
             'property int viewMonth: 8',
             'property int weekStart: 1',
             'property var labelLocale: Qt.locale("en_US")',
+            'property var serviceItems: []',
+            'property string accountFilter: "all"',
             property_line(panel, "selectedDate"),
             property_line(panel, "weeks"),
+            *[property_line(panel, name) for name in (
+                "firstVisibleDate", "lastVisibleDate", "agendaIndex", "agendaItems")],
             *[function(panel, name) for name in (
                 "tr", "dateFromKey", "selectedDateLabel", "selectDateKey", "requestRange", "moveMonth")],
         ]) + "\n}\n"

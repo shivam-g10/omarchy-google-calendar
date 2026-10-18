@@ -61,3 +61,19 @@ test('empty ranges, changed ranges and updated items do not retain old results',
   assert.deepEqual(Object.keys(Model.agendaIndex(items, '2026-11-01', '2026-11-02', 'all')),
     ['2026-11-01', '2026-11-02'])
 })
+
+test('midnight rollback keeps events on every overlapping local day', () => {
+  const previous = process.env.TZ
+  process.env.TZ = 'America/St_Johns'
+  try {
+    const rollback = [event('rollback', '2009-10-31T23:45:00-02:30', '2009-10-31T23:15:00-03:30')]
+    const index = Model.agendaIndex(rollback, '2009-10-31', '2009-11-01', 'all')
+    assert.equal(index['2009-11-01'].count, 1)
+    for (const key of Object.keys(index)) {
+      assert.deepEqual(index[key].items, Model.agendaItemsForDay(rollback, key, 'all'))
+    }
+  } finally {
+    if (previous === undefined) delete process.env.TZ
+    else process.env.TZ = previous
+  }
+})

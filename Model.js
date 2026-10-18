@@ -175,7 +175,7 @@ function localDayBounds(key) {
 
 // Google all-day event ends are exclusive. Timed events are matched by local
 // overlap so a meeting crossing midnight appears on both affected dates.
-function itemOccursOnDate(item, key) {
+function itemOccursOnDate(item, key, dayBounds) {
   if (!item) return false
   var selected = String(key || "")
   if (selected === "") return false
@@ -193,7 +193,7 @@ function itemOccursOnDate(item, key) {
     return selected >= allDayStart && (allDayEnd === "" ? selected === allDayStart : selected < allDayEnd)
   }
 
-  var bounds = localDayBounds(selected)
+  var bounds = dayBounds || localDayBounds(selected)
   var start = new Date(item.start)
   if (!bounds || bounds.start >= bounds.end || isNaN(start.getTime())) return false
   var end = new Date(item.end)
@@ -232,7 +232,7 @@ function appendUnique(target, value) {
   if (text !== "" && target.indexOf(text) === -1) target.push(text)
 }
 
-function agendaItemsForDay(items, key, accountFilter) {
+function agendaItemsForDay(items, key, accountFilter, dayBounds) {
   var source = items && typeof items.length === "number" ? items : []
   var filter = String(accountFilter || "all")
   var out = []
@@ -241,7 +241,7 @@ function agendaItemsForDay(items, key, accountFilter) {
     var item = source[i]
     if (!item) continue
     if (filter !== "all" && String(item.accountId || "") !== filter) continue
-    if (!itemOccursOnDate(item, key)) continue
+    if (!itemOccursOnDate(item, key, dayBounds)) continue
 
     var type = String(item.type || "event").toLowerCase()
     var sharedKey = type === "event" && item.icalUid
@@ -294,8 +294,12 @@ function agendaIndex(items, firstKey, lastKey, accountFilter) {
   var first = Date.parse(firstKey + "T00:00:00Z")
   var last = Date.parse(lastKey + "T00:00:00Z")
   var buckets = {}
+  var bounds = {}
   var result = {}
-  for (var day = first; day <= last; day += MS_PER_DAY) buckets[day] = []
+  for (var day = first; day <= last; day += MS_PER_DAY) {
+    buckets[day] = []
+    bounds[day] = localDayBounds(keyForCivilDate(new Date(day)))
+  }
 
   var filter = String(accountFilter || "all")
   var source = items || []
@@ -315,8 +319,13 @@ function agendaIndex(items, firstKey, lastKey, accountFilter) {
       if (!isFinite(start)) continue
       var end = new Date(item.end).getTime()
       end = isFinite(end) ? Math.max(start + 1, end) : start + 1
-      startKey = keyForDate(new Date(start))
-      endKey = keyForDate(new Date(end - 1))
+      // Local date can move backwards during a midnight clock rollback.
+      // Compare real instants against the precomputed visible day boundaries.
+      for (var timedDay = first; timedDay <= last; timedDay += MS_PER_DAY) {
+        if (start < bounds[timedDay].end && end > bounds[timedDay].start)
+          buckets[timedDay].push(item)
+      }
+      continue
     }
     var from = Math.max(first, Date.parse(startKey + "T00:00:00Z"))
     var through = Math.min(last, Date.parse(endKey + "T00:00:00Z") - (exclusiveEnd ? MS_PER_DAY : 0))
@@ -327,7 +336,7 @@ function agendaIndex(items, firstKey, lastKey, accountFilter) {
     var utc = new Date(date)
     var key = dateKey(utc.getUTCFullYear(), utc.getUTCMonth(), utc.getUTCDate())
     // Deduplicate after overlap, so copies with different spans stay correct.
-    var matching = agendaItemsForDay(buckets[date], key, filter)
+    var matching = agendaItemsForDay(buckets[date], key, filter, bounds[date])
     result[key] = { items: matching, count: matching.length, colors: agendaDotColors(matching, 3) }
   }
   return result

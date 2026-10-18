@@ -109,7 +109,9 @@ Panel {
   readonly property string firstVisibleDate: weeks[0].days[0].key
   readonly property string lastVisibleDate: weeks[5].days[6].key
   readonly property var agendaIndex: Model.agendaIndex(serviceItems, firstVisibleDate, lastVisibleDate, accountFilter)
-  readonly property var agendaItems: agendaIndex[selectedDateKey] ? agendaIndex[selectedDateKey].items : []
+  readonly property var agendaItems: agendaIndex[selectedDateKey]
+    ? agendaIndex[selectedDateKey].items
+    : Model.agendaItemsForDay(serviceItems, selectedDateKey, accountFilter)
   readonly property date selectedDate: dateFromKey(selectedDateKey)
 
 

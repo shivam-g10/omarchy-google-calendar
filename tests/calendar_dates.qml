@@ -70,10 +70,23 @@ QtObject {
     check(panel.selectedDateKey === "2026-09-30", "month navigation clamps day")
     check(JSON.stringify(Model.stepMonth(2001, 2, 1)) === '{"year":2001,"month":3}', "month navigation across first-day gap")
 
+    // Another monitor can change shared selection without changing this month.
+    panel.viewMonth = 9
+    panel.serviceItems = [{ type: "task", dueDate: "2026-11-20" }]
+    var cachedIndex = panel.agendaIndex
+    panel.selectedDateKey = "2026-11-20"
+    check(panel.agendaItems.length === 1, "shared selection outside grid remains visible")
+    check(panel.agendaIndex === cachedIndex, "selection does not rebuild grid index")
+    panel.selectedDateKey = "2026-10-06"
+    check(panel.agendaItems.length === 0, "visible date uses cached bucket")
+    panel.todayKey = "2026-09-02"
+    check(panel.agendaIndex === cachedIndex, "today marker does not rebuild same range")
+
     if (zone === "America/Santiago") {
       var bounds = checkBounds("2026-09-06", "2026-09-06T04:00:00Z", "2026-09-07T03:00:00Z")
       var timed = { type: "event", start: "2026-09-06T12:00:00-03:00", end: "2026-09-06T13:00:00-03:00" }
       check(Model.itemOccursOnDate(timed, "2026-09-06"), "midday event remains visible")
+      check(Model.agendaIndex([timed], "2026-09-05", "2026-09-07", "all")["2026-09-06"].count === 1, "indexed midday event remains visible")
       check(!Model.itemOccursOnDate(timed, "2026-09-05"), "event does not leak to prior day")
       check(!Model.itemOccursOnDate({ start: "2026-09-05T23:00:00-04:00", end: "2026-09-06T04:00:00Z" }, "2026-09-06"), "end is exclusive")
       check(Model.itemOccursOnDate({ start: "2026-09-06T03:30:00Z", end: "2026-09-06T04:30:00Z" }, "2026-09-06"), "crossing event overlaps gap day")
@@ -88,6 +101,7 @@ QtObject {
     } else if (zone === "Pacific/Apia") {
       checkBounds("2011-12-30", "2011-12-30T10:00:00Z", "2011-12-30T10:00:00Z")
       check(!Model.itemOccursOnDate({ start: "2011-12-29T00:00:00Z", end: "2012-01-01T00:00:00Z" }, "2011-12-30"), "skipped civil day has no timed events")
+      check(Model.agendaIndex([{ start: "2011-12-29T00:00:00Z", end: "2012-01-01T00:00:00Z" }], "2011-12-29", "2011-12-31", "all")["2011-12-30"].count === 0, "index preserves skipped civil day")
     }
     check(Model.itemOccursOnDate({ type: "task", dueDate: "2026-09-06" }, "2026-09-06"), "task date remains civil")
     check(Model.itemOccursOnDate({ allDay: true, start: "2026-09-06", end: "2026-09-07" }, "2026-09-06"), "all-day date remains civil")
