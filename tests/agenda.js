@@ -66,9 +66,17 @@ test('midnight rollback keeps events on every overlapping local day', () => {
   const previous = process.env.TZ
   process.env.TZ = 'America/St_Johns'
   try {
-    const rollback = [event('rollback', '2009-10-31T23:45:00-02:30', '2009-10-31T23:15:00-03:30')]
+    const rollback = [
+      event('rollback', '2009-10-31T23:45:00-02:30', '2009-10-31T23:15:00-03:30'),
+      event('early-minute', '2009-11-01T00:00:10-02:30', '2009-11-01T00:00:20-02:30'),
+      event('resumed-hour', '2009-10-31T23:10:00-03:30', '2009-10-31T23:20:00-03:30'),
+      event('spans-interruption', '2009-11-01T00:00:30-02:30', '2009-11-01T00:00:30-03:30'),
+    ]
     const index = Model.agendaIndex(rollback, '2009-10-31', '2009-11-01', 'all')
-    assert.equal(index['2009-11-01'].count, 1)
+    assert.deepEqual(index['2009-10-31'].items.map(item => item.id),
+      ['rollback', 'spans-interruption', 'resumed-hour'])
+    assert.deepEqual(index['2009-11-01'].items.map(item => item.id),
+      ['rollback', 'early-minute', 'spans-interruption'])
     for (const key of Object.keys(index)) {
       assert.deepEqual(index[key].items, Model.agendaItemsForDay(rollback, key, 'all'))
     }

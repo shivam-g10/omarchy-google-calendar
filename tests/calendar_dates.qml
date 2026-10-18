@@ -96,6 +96,25 @@ QtObject {
       checkBounds("2026-11-01", "2026-11-01T04:00:00Z", "2026-11-02T05:00:00Z")
       check(Model.itemOccursOnDate({ start: "2026-11-01T04:15:00Z", end: "2026-11-01T04:45:00Z" }, "2026-11-01"), "first repeated-midnight hour included")
       check(Model.itemOccursOnDate({ start: "2026-11-01T05:15:00Z", end: "2026-11-01T05:45:00Z" }, "2026-11-01"), "second repeated-midnight hour included")
+    } else if (zone === "America/St_Johns") {
+      // At 00:01, the clock returns to 23:01 on the previous date. Both
+      // dates have separate intervals, not one continuous midnight-to-midnight span.
+      var rollbackCases = [
+        ["2009-11-01T00:00:10-02:30", "2009-11-01T00:00:20-02:30", false, true],
+        ["2009-10-31T23:10:00-03:30", "2009-10-31T23:20:00-03:30", true, false],
+        ["2009-11-01T00:00:30-02:30", "2009-11-01T00:00:30-03:30", true, true],
+        ["2009-10-31T23:45:00-02:30", "2009-10-31T23:15:00-03:30", true, true],
+        ["2009-11-01T00:10:00-03:30", "2009-11-01T00:20:00-03:30", false, true]
+      ]
+      for (var test of rollbackCases) {
+        var event = { start: test[0], end: test[1] }
+        var index = Model.agendaIndex([event], "2009-10-31", "2009-11-01", "all")
+        for (var day = 0; day < 2; day++) {
+          var key = day === 0 ? "2009-10-31" : "2009-11-01"
+          check(Model.itemOccursOnDate(event, key) === test[day + 2], "rollback membership " + key + " " + test[0])
+          check(index[key].count === Number(test[day + 2]), "rollback index " + key + " " + test[0])
+        }
+      }
     } else if (zone === "Asia/Kathmandu") {
       checkBounds("1986-01-01", "1985-12-31T18:30:00Z", "1986-01-01T18:15:00Z")
     } else if (zone === "Pacific/Apia") {

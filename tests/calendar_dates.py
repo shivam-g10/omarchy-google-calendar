@@ -67,7 +67,7 @@ class CalendarDateTests(unittest.TestCase):
             (path / "ServiceProbe.qml").write_text(service_probe)
             (path / "PanelProbe.qml").write_text(panel_probe)
             template = (ROOT / "tests/calendar_dates.qml").read_text()
-            for zone in ("America/Santiago", "America/Havana", "Asia/Kolkata",
+            for zone in ("America/Santiago", "America/Havana", "America/St_Johns", "Asia/Kolkata",
                          "Asia/Kathmandu", "Pacific/Apia", "UTC"):
                 with self.subTest(timezone=zone):
                     test = template.replace('import "../Model.js" as Model', model_import.strip())

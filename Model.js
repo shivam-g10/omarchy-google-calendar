@@ -139,21 +139,34 @@ function dateOnlyKey(value) {
   return match ? match[1] : ""
 }
 
-// Resolve the first real instant of a local day. A midnight can occur twice
-// or not at all, and Qt's Date constructor can resolve a gap to the prior day.
-function localDayStart(civilMidnight) {
+// Resolve a local day boundary. A midnight can occur twice or not at all,
+// and Qt's Date constructor can resolve a gap to the prior day.
+function localDayBoundary(civilMidnight) {
   var before = new Date(civilMidnight - MS_PER_DAY).getTimezoneOffset()
   var after = new Date(civilMidnight + MS_PER_DAY).getTimezoneOffset()
   var low = civilMidnight + Math.min(before, after) * 60000
   var high = civilMidnight + Math.max(before, after) * 60000
+  if (low === high) return { first: low }
   var first = new Date(low)
   var firstDay = Date.UTC(first.getFullYear(), first.getMonth(), first.getDate())
-  if (firstDay === civilMidnight && first.getHours() === 0 && first.getMinutes() === 0)
-    return low
+  var firstIsMidnight = firstDay === civilMidnight && first.getHours() === 0 && first.getMinutes() === 0
   var last = new Date(high)
   var lastDay = Date.UTC(last.getFullYear(), last.getMonth(), last.getDate())
-  if (lastDay === civilMidnight && last.getHours() === 0 && last.getMinutes() === 0)
-    return high
+  var lastIsMidnight = lastDay === civilMidnight && last.getHours() === 0 && last.getMinutes() === 0
+  if (firstIsMidnight && lastIsMidnight && low < high) {
+    // A rollback just after midnight can briefly enter this date, return to
+    // the previous date, then enter it again at the second midnight.
+    var left = low, right = high
+    var offset = first.getTimezoneOffset()
+    while (left < right) {
+      var probe = Math.floor((left + right) / 2)
+      if (new Date(probe).getTimezoneOffset() === offset) left = probe + 1
+      else right = probe
+    }
+    return { first: low, last: high, rollback: left }
+  }
+  if (firstIsMidnight) return { first: low }
+  if (lastIsMidnight) return { first: high }
   // Only a missing midnight reaches this path. This also leaves a skipped
   // civil day with identical start and end bounds rather than inventing time.
   while (low < high) {
@@ -163,14 +176,28 @@ function localDayStart(civilMidnight) {
     if (day < civilMidnight) low = middle + 1
     else high = middle
   }
-  return low
+  return { first: low }
 }
 
 function localDayBounds(key) {
   var date = civilDate(key)
   if (!date) return null
   var midnight = date.getTime()
-  return { start: localDayStart(midnight), end: localDayStart(midnight + MS_PER_DAY) }
+  var from = localDayBoundary(midnight)
+  var to = localDayBoundary(midnight + MS_PER_DAY)
+  var splitStart = from.rollback !== undefined && from.rollback < from.last
+  var splitEnd = to.rollback !== undefined && to.rollback < to.last
+  if (!splitStart && !splitEnd) return { start: from.first, end: to.first }
+
+  var intervals = []
+  var start = from.first
+  if (splitStart) {
+    intervals.push({ start: start, end: from.rollback })
+    start = from.last
+  }
+  if (start < to.first) intervals.push({ start: start, end: to.first })
+  if (splitEnd) intervals.push({ start: to.rollback, end: to.last })
+  return { start: from.first, end: splitEnd ? to.last : to.first, intervals: intervals }
 }
 
 // Google all-day event ends are exclusive. Timed events are matched by local
@@ -198,6 +225,13 @@ function itemOccursOnDate(item, key, dayBounds) {
   if (!bounds || bounds.start >= bounds.end || isNaN(start.getTime())) return false
   var end = new Date(item.end)
   var endMs = isNaN(end.getTime()) ? start.getTime() + 1 : Math.max(start.getTime() + 1, end.getTime())
+  if (bounds.intervals) {
+    for (var i = 0; i < bounds.intervals.length; i++) {
+      var interval = bounds.intervals[i]
+      if (start.getTime() < interval.end && endMs > interval.start) return true
+    }
+    return false
+  }
   return start.getTime() < bounds.end && endMs > bounds.start
 }
 
