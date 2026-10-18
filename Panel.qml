@@ -108,7 +108,10 @@ Panel {
   readonly property var reconnectTargetAccount: selectedNeedsReconnect ? selectedAccount : null
   readonly property bool reconnectBannerEnabled: reconnectTargetAccount !== null
     && backendConnected && !addingAccount && !cancellingAccount && !oauthFinishing
-  readonly property var agendaItems: Model.agendaItemsForDay(serviceItems, selectedDateKey, accountFilter)
+  readonly property string firstVisibleDate: weeks[0].days[0].key
+  readonly property string lastVisibleDate: weeks[5].days[6].key
+  readonly property var agendaIndex: Model.agendaIndex(serviceItems, firstVisibleDate, lastVisibleDate, accountFilter)
+  readonly property var agendaItems: agendaIndex[selectedDateKey] ? agendaIndex[selectedDateKey].items : []
   readonly property date selectedDate: dateFromKey(selectedDateKey)
 
 
@@ -1179,7 +1182,8 @@ Panel {
                       id: dayCell
                       required property var modelData
                       readonly property bool selectedCell: modelData.key === root.selectedDateKey
-                      readonly property var dotColors: Model.dayDotColors(root.serviceItems, modelData.key, root.accountFilter, 3)
+                      readonly property var dayAgenda: root.agendaIndex[modelData.key]
+                      readonly property var dotColors: dayAgenda ? dayAgenda.colors : []
 
                       width: root.cellWidth
                       height: root.cellHeight
@@ -1240,7 +1244,7 @@ Panel {
 
                       PanelToolTip {
                         visible: dayCellMouse.containsMouse
-                        text: Model.agendaItemsForDay(root.serviceItems, modelData.key, root.accountFilter).length
+                        text: (dayCell.dayAgenda ? dayCell.dayAgenda.count : 0)
                           + " item(s)"
                         fontFamily: root.contentFontFamily
                       }

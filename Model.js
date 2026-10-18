@@ -225,7 +225,10 @@ function agendaItemsForDay(items, key, accountFilter) {
 }
 
 function dayDotColors(items, key, accountFilter, limit) {
-  var matching = agendaItemsForDay(items, key, accountFilter)
+  return agendaDotColors(agendaItemsForDay(items, key, accountFilter), limit)
+}
+
+function agendaDotColors(matching, limit) {
   var maximum = Math.max(0, Math.round(Number(limit === undefined ? 3 : limit)))
   var seen = {}
   var colors = []
@@ -241,6 +244,51 @@ function dayDotColors(items, key, accountFilter, limit) {
     }
   }
   return colors
+}
+
+// Bucket once per visible range, then prepare each day's display data once.
+// UTC is used only to count calendar dates; timed events retain local dates.
+function agendaIndex(items, firstKey, lastKey, accountFilter) {
+  var first = Date.parse(firstKey + "T00:00:00Z")
+  var last = Date.parse(lastKey + "T00:00:00Z")
+  var buckets = {}
+  var result = {}
+  for (var day = first; day <= last; day += MS_PER_DAY) buckets[day] = []
+
+  var filter = String(accountFilter || "all")
+  var source = items || []
+  for (var i = 0; i < source.length; i++) {
+    var item = source[i]
+    if (!item || (filter !== "all" && String(item.accountId || "") !== filter)) continue
+    var startKey, endKey
+    var exclusiveEnd = false
+    if (String(item.type || "event").toLowerCase() === "task") {
+      startKey = endKey = dateOnlyKey(item.dueDate || item.start)
+    } else if (item.allDay === true) {
+      startKey = dateOnlyKey(item.start)
+      endKey = dateOnlyKey(item.end) || startKey
+      exclusiveEnd = dateOnlyKey(item.end) !== ""
+    } else {
+      var start = new Date(item.start).getTime()
+      if (!isFinite(start)) continue
+      var end = new Date(item.end).getTime()
+      end = isFinite(end) ? Math.max(start + 1, end) : start + 1
+      startKey = keyForDate(new Date(start))
+      endKey = keyForDate(new Date(end - 1))
+    }
+    var from = Math.max(first, Date.parse(startKey + "T00:00:00Z"))
+    var through = Math.min(last, Date.parse(endKey + "T00:00:00Z") - (exclusiveEnd ? MS_PER_DAY : 0))
+    for (var stamp = from; stamp <= through; stamp += MS_PER_DAY) buckets[stamp].push(item)
+  }
+
+  for (var date = first; date <= last; date += MS_PER_DAY) {
+    var utc = new Date(date)
+    var key = dateKey(utc.getUTCFullYear(), utc.getUTCMonth(), utc.getUTCDate())
+    // Deduplicate after overlap, so copies with different spans stay correct.
+    var matching = agendaItemsForDay(buckets[date], key, filter)
+    result[key] = { items: matching, count: matching.length, colors: agendaDotColors(matching, 3) }
+  }
+  return result
 }
 
 function reminderOffsetLabel(value) {
@@ -461,6 +509,7 @@ if (typeof module !== "undefined") {
     itemOccursOnDate: itemOccursOnDate,
     agendaItemsForDay: agendaItemsForDay,
     dayDotColors: dayDotColors,
+    agendaIndex: agendaIndex,
     reminderOffsetLabel: reminderOffsetLabel,
     reminderSummary: reminderSummary,
     normalizedWeekStart: normalizedWeekStart,
