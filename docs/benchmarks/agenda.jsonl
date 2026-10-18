@@ -1,0 +1,6 @@
+{"node":"v26.12.0","cpu":"AMD Ryzen 7 9700X 8-Core Processor","references":{"main":"60ba50c","pr":"4122316","revised":"working-tree"},"samples":40,"warmups":5,"units":"ms","fixture":"synthetic, 42 days"}
+{"fixture":"mixed-75","timezone":"Asia/Kolkata","items":75,"matchesMain":true,"matchesPR":true,"main":{"p50":2.341,"p95":2.429},"pr":{"p50":0.201,"p95":0.23},"revised":{"p50":0.093,"p95":0.123}}
+{"fixture":"mixed-1000","timezone":"Asia/Kolkata","items":1000,"matchesMain":true,"matchesPR":true,"main":{"p50":34.786,"p95":37.447},"pr":{"p50":2.675,"p95":2.829},"revised":{"p50":1.305,"p95":1.612}}
+{"fixture":"mixed-5000","timezone":"Asia/Kolkata","items":5000,"matchesMain":true,"matchesPR":true,"main":{"p50":177.76,"p95":181.062},"pr":{"p50":15.213,"p95":15.72},"revised":{"p50":8.397,"p95":8.689}}
+{"fixture":"midnight-gap-1000","timezone":"America/Santiago","items":1000,"matchesMain":true,"matchesPR":true,"main":{"p50":51.425,"p95":52.824},"pr":{"p50":3.138,"p95":3.212},"revised":{"p50":1.806,"p95":1.869}}
+{"fixture":"midnight-rollback-400","timezone":"America/St_Johns","items":400,"matchesMain":false,"matchesPR":true,"note":"Main has the known midnight-rollback correctness bug.","main":{"p50":15.412,"p95":15.605},"pr":{"p50":1.047,"p95":1.068},"revised":{"p50":0.6,"p95":0.626}}

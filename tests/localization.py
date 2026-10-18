@@ -32,5 +32,31 @@ class LocaleTests(unittest.TestCase):
         """, 0)
 
 
+    def test_all_supported_clock_locales(self):
+        self.run_qml("""
+        if (stage++ === 0) {
+            var languages = ["en_US", "en-GB", "es_CL", "fr_FR", "de_DE", "pt_BR", "hi_IN", "zh_CN", "ja_JP"]
+            for (var language of languages) {
+                var item = create(providedBar)
+                item.settings = {uiLanguage: language, format: "dddd {ordinal} MMMM 'W'ww HH:mm"}
+                widgets.push(item)
+            }
+            return
+        }
+        var date = new Date(2026, 9, 18, 7, 6)
+        for (var widget of widgets) {
+            var locale = widget.labelLocale
+            var ordinal = locale.name.indexOf("en_") === 0 ? "18th" : "18"
+            var expected = locale.dayName(0, Locale.LongFormat) + " " + ordinal + " "
+                + locale.monthName(9, Locale.LongFormat) + " W42 07:06"
+            check(widget.formatted(date) === expected, locale.name + " named custom pattern: " + widget.formatted(date))
+            widget.settings = {uiLanguage: locale.name, format: "yyyy-MM-dd 'literal' HH:mm"}
+            check(widget.formatted(date) === "2026-10-18 literal 07:06", locale.name + " numeric/literal pattern")
+        }
+        console.log("TEST_PASSED")
+        Qt.quit()
+        """, 0)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -21,7 +21,7 @@ TestCase {
         compare(spanish("Calendar"), "Calendario")
         compare(I18n.translate("es_MX", "All accounts"), "Todas las cuentas")
         compare(I18n.translate("en_US", "Calendar"), "Calendar")
-        compare(I18n.translate("fr_FR", "Calendar"), "Calendar")
+        compare(I18n.translate("it_IT", "Calendar"), "Calendar")
         compare(spanish("Unknown server detail"), "Unknown server detail")
         compare(spanish("{count} item", {count: 1}), "1 elemento")
         compare(spanish("{count} items", {count: 2}), "2 elementos")
@@ -30,6 +30,47 @@ TestCase {
         compare(spanish("Calendar service is unavailable"), "El servicio de calendario no está disponible")
         compare(spanish("Calendar service returned invalid data"), "El servicio de calendario devolvió datos no válidos")
         compare(I18n.translate("en_US", "Calendar service is unavailable"), "Calendar service is unavailable")
+    }
+
+    function test_catalogs_are_complete_and_preserve_placeholders() {
+        var keys = Object.keys(I18n.catalogs.es).sort()
+        compare(keys.length, 60)
+        for (var language of ["es", "fr", "de", "pt", "hi", "zh", "ja"]) {
+            var catalog = I18n.catalogs[language]
+            compare(JSON.stringify(Object.keys(catalog).sort()), JSON.stringify(keys), language)
+            for (var source of keys) {
+                verify(typeof catalog[source] === "string" && catalog[source].length > 0, language + ": " + source)
+                compare(JSON.stringify((catalog[source].match(/\{[^{}]+\}/g) || []).sort()),
+                        JSON.stringify((source.match(/\{[^{}]+\}/g) || []).sort()), language + ": " + source)
+            }
+        }
+    }
+
+    function test_supported_languages_and_fallback() {
+        var labels = {en_US: "Calendar", en_GB: "Calendar", es_CL: "Calendario", fr_FR: "Calendrier", de_DE: "Kalender",
+            pt_BR: "Calendário", hi_IN: "कैलेंडर", zh_CN: "日历", ja_JP: "カレンダー"}
+        for (var locale in labels) compare(I18n.translate(locale, "Calendar"), labels[locale], locale)
+        compare(I18n.translate("en-GB", "Calendar"), "Calendar")
+        compare(I18n.translate("pt_PT", "Calendar"), "Calendário")
+        compare(I18n.translate("zh_Hans_CN", "Calendar"), "日历")
+        compare(I18n.translate("zh_SG", "Calendar"), "日历")
+        for (var unsupported of ["it_IT", "zh_TW", "zh_HK", "zh_MO", "zh_Hant", "unknown"])
+            compare(I18n.translate(unsupported, "Calendar"), "Calendar", unsupported)
+        for (var language of Object.keys(I18n.catalogs)) {
+            compare(I18n.translate(language, "Unknown detail"), "Unknown detail")
+            var message = I18n.translate(language, "Complete Google sign-in for {account} in your browser.", {account: "person@example.test"})
+            verify(message.indexOf("person@example.test") >= 0)
+            verify(message.indexOf("{account}") < 0)
+        }
+    }
+
+    function test_british_locale_dates() {
+        var british = Qt.locale(I18n.localeName("en-GB", "en_US"))
+        compare(british.name, "en_GB")
+        compare(british.firstDayOfWeek, 1)
+        compare(british.dayName(0, Locale.LongFormat), "Sunday")
+        compare(new Date(2026, 9, 18, 12).toLocaleDateString(british, Locale.ShortFormat), "18/10/2026")
+        compare(Model.ordinalDay(18, british.name), "18th")
     }
 
     function test_reminders() {

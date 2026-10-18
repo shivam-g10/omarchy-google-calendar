@@ -269,13 +269,14 @@ function appendUnique(target, value) {
 function agendaItemsForDay(items, key, accountFilter, dayBounds) {
   var source = items && typeof items.length === "number" ? items : []
   var filter = String(accountFilter || "all")
+  var bounds = dayBounds || localDayBounds(key)
   var out = []
   var sharedEvents = {}
   for (var i = 0; i < source.length; i++) {
     var item = source[i]
     if (!item) continue
     if (filter !== "all" && String(item.accountId || "") !== filter) continue
-    if (!itemOccursOnDate(item, key, dayBounds)) continue
+    if (!itemOccursOnDate(item, key, bounds)) continue
 
     var type = String(item.type || "event").toLowerCase()
     var sharedKey = type === "event" && item.icalUid
@@ -327,12 +328,11 @@ function agendaDotColors(matching, limit) {
 function agendaIndex(items, firstKey, lastKey, accountFilter) {
   var first = Date.parse(firstKey + "T00:00:00Z")
   var last = Date.parse(lastKey + "T00:00:00Z")
-  var buckets = {}
-  var bounds = {}
+  var days = []
   var result = {}
   for (var day = first; day <= last; day += MS_PER_DAY) {
-    buckets[day] = []
-    bounds[day] = localDayBounds(keyForCivilDate(new Date(day)))
+    var key = keyForCivilDate(new Date(day))
+    days.push({ key: key, bounds: localDayBounds(key), items: [] })
   }
 
   var filter = String(accountFilter || "all")
@@ -355,23 +355,23 @@ function agendaIndex(items, firstKey, lastKey, accountFilter) {
       end = isFinite(end) ? Math.max(start + 1, end) : start + 1
       // Local date can move backwards during a midnight clock rollback.
       // Compare real instants against the precomputed visible day boundaries.
-      for (var timedDay = first; timedDay <= last; timedDay += MS_PER_DAY) {
-        if (start < bounds[timedDay].end && end > bounds[timedDay].start)
-          buckets[timedDay].push(item)
+      for (var d = 0; d < days.length; d++) {
+        var target = days[d]
+        if (start < target.bounds.end && end > target.bounds.start)
+          target.items.push(item)
       }
       continue
     }
-    var from = Math.max(first, Date.parse(startKey + "T00:00:00Z"))
-    var through = Math.min(last, Date.parse(endKey + "T00:00:00Z") - (exclusiveEnd ? MS_PER_DAY : 0))
-    for (var stamp = from; stamp <= through; stamp += MS_PER_DAY) buckets[stamp].push(item)
+    var from = Math.max(0, (Date.parse(startKey + "T00:00:00Z") - first) / MS_PER_DAY)
+    var through = Math.min(days.length - 1, (Date.parse(endKey + "T00:00:00Z") - first) / MS_PER_DAY - (exclusiveEnd ? 1 : 0))
+    for (var index = from; index <= through; index++) days[index].items.push(item)
   }
 
-  for (var date = first; date <= last; date += MS_PER_DAY) {
-    var utc = new Date(date)
-    var key = dateKey(utc.getUTCFullYear(), utc.getUTCMonth(), utc.getUTCDate())
+  for (var date = 0; date < days.length; date++) {
+    var entry = days[date]
     // Deduplicate after overlap, so copies with different spans stay correct.
-    var matching = agendaItemsForDay(buckets[date], key, filter, bounds[date])
-    result[key] = { items: matching, count: matching.length, colors: agendaDotColors(matching, 3) }
+    var matching = agendaItemsForDay(entry.items, entry.key, filter, entry.bounds)
+    result[entry.key] = { items: matching, count: matching.length, colors: agendaDotColors(matching, 3) }
   }
   return result
 }

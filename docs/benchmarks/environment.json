@@ -1,0 +1,25 @@
+{
+  "date": "2026-10-18",
+  "cpu": "AMD Ryzen 7 9700X, 8 cores / 16 threads",
+  "cpu_governor": "performance",
+  "kernel": "7.2.5-3-omarchy",
+  "qt": "6.11.2",
+  "quickshell": "0.3.1",
+  "omarchy": "4.0.4-1",
+  "node": "v26.12.0",
+  "baseline_main": "60ba50c34d1de4b753d89a406fca03cff51c06b8",
+  "baseline_pr": "4122316aaae83cda04e5c35a6dfd25e7e42815b3",
+  "source_sha256": {
+    "BarWidget.qml": "520272f5b4ec76a1bdda5b6079abc7e0cd130569f9388f28039529417c3584ea",
+    "Panel.qml": "f38a6300a96ad42902a686d03997a64322ffb68ccc1067906f3116d236ee2df3",
+    "CalendarService.qml": "eac44da0b47819238a0a67dbe00bda4087c206fb6cecf78b006782c466cf4bd2",
+    "Model.js": "e8b4439aa4497f6f9334bd7f3e4a9dd7da000901036d6e81befe4d60ed49ec31",
+    "I18n.js": "85d475bef91c56bf57ed32a5baf73428455381ae91b2b17b8859f44c5d5179cc",
+    "services/FallbackCalendarService.qml": "4d7003d65a9334a12ba5440876740bf68d78029475ff2b16c65812eb7cdbbc73",
+    "services/qmldir": "855774976d02976caadc259d4ea78c68129e28363f350d88e01c705a4d90afa3",
+    "manifest.json": "5f5dc27f3dcb774612ba71f800b40fda6081ea5c796eef931e7060d41993e7b0"
+  },
+  "rendering": "offscreen Qt Quick software renderer, installed Omarchy controls, compositor wrapper substituted",
+  "data": "synthetic fixtures only, isolated HOME/XDG directories",
+  "execution": "benchmarks sequential; other desktop activity not disabled; no CPU pinning"
+}

@@ -43,9 +43,14 @@ user service and communicates over a private Unix socket.
 | Customize clock | Bar settings; try `dddd, {ordinal} MMM, HH:mm` |
 
 The widget follows the system locale. Set `uiLanguage` on the `shivam.clock` bar
-entry (for example, `"uiLanguage": "es_CL"`) to override it. English and Spanish UI
-strings are included; other languages use English text with localized dates.
-Custom clock formats remain unchanged; `{ordinal}` uses suffixes only in English.
+entry (for example, `"uiLanguage": "es_CL"`) to override it. UI translations include
+English (including `en_GB` / `en-GB`), Spanish, French, German, Portuguese, Hindi,
+Simplified Chinese, and Japanese.
+Portuguese uses one shared catalog; Traditional Chinese regions and other unsupported
+languages use English UI text with localized dates. Calendar content and external error
+details are not translated. Custom clock formats remain unchanged; `{ordinal}` uses
+suffixes only in English. Week start still follows the system or `weekStartDay`,
+independently of `uiLanguage`.
 
 Google OAuth apps in Testing can require sign-in again after seven days.
 See [setup details](docs/google-oauth.md).
@@ -96,20 +101,18 @@ The uninstaller removes the agent skill and preserves any user-added files in it
 
 ## Resource footprint
 
-Written in Rust to keep background RAM and CPU overhead low as desktop plugins accumulate.
-
-Daemon memory snapshot. Shared-shell UI excluded.
-
-| Memory measurement | MB |
-| --- | ---: |
-| Service memory (systemd) | 10.66 |
-| Proportional memory (PSS) | 10.21 |
+The panel loads on first use and reuses one agenda index for the visible dates.
+An isolated, software-rendered Qt fixture with 1,000 events measured a 21 ms median
+agenda update. [Benchmarks, raw results, and reproduction commands](docs/benchmarks/README.md)
+cover startup, rendering, date/locale helpers, memory, and idle CPU.
 
 The built-in bar uses the shell's shared calendar client. Replacement bars cannot
 access that instance, so they share one fallback client across all monitors. The
 fallback starts only when needed and remains until the shell's QML engine exits,
 even if the built-in bar is restored. It adds one socket connection and backend
-client thread, with no extra daemon or polling timer. Its additional RAM and CPU
-cost have not been measured and are not included in the snapshot above.
+client thread, with no extra daemon or polling timer. With 1,000 cached events,
+retaining both clients added about 4.84 MiB PSS in the isolated resource fixture.
+Measured connected idle CPU was 0–0.05% of one core over 20-second samples;
+this does not measure Google synchronization or live desktop/GPU rendering.
 
 [MIT license](LICENSE) · [Third-party notices](THIRD_PARTY_NOTICES)

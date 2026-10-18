@@ -3,6 +3,7 @@ import Quickshell
 import Quickshell.Io
 import qs.Commons
 import qs.Ui
+import "." as Calendar
 import "Model.js" as Model
 import "services" as Services
 import "I18n.js" as I18n
@@ -54,6 +55,7 @@ BarWidget {
     displayDate = new Date()
     if (panelLoader.item && panelLoader.item.refreshFromGoogle)
       panelLoader.item.refreshFromGoogle()
+    else if (root.calendarService) root.calendarService.refresh()
   }
 
   function cycleFormat() {
@@ -84,6 +86,7 @@ BarWidget {
   readonly property bool opened: panelLoader.item ? panelLoader.item.opened === true : false
 
   function open() {
+    panelLoader.active = true
     if (panelLoader.item) panelLoader.item.open()
   }
 
@@ -92,10 +95,12 @@ BarWidget {
   }
 
   function togglePanel() {
-    if (panelLoader.item) panelLoader.item.toggle()
+    if (root.opened) root.close()
+    else root.open()
   }
 
   function toggleWeekStart() {
+    panelLoader.active = true
     if (panelLoader.item) panelLoader.item.toggleWeekStart()
   }
 
@@ -116,25 +121,8 @@ BarWidget {
     if (panelLoader.item) panelLoader.item.closeForPopoutSwitch()
   }
 
-  function injectPanel() {
-    var target = panelLoader.item
-    if (!target) return
-    if ("moduleName" in target) target.moduleName = root.moduleName
-    if ("ipcTarget" in target) target.ipcTarget = root.moduleName
-    if ("bar" in target) target.bar = root.bar
-    if ("settings" in target) target.settings = root.settings
-    if ("anchorItem" in target) target.anchorItem = button
-    if ("hostWidget" in target) target.hostWidget = root
-    if ("calendarService" in target) target.calendarService = root.calendarService
-    if ("service" in target) target.service = root.calendarService
-  }
-
   implicitWidth: button.implicitWidth
   implicitHeight: button.implicitHeight
-
-  onBarChanged: injectPanel()
-  onSettingsChanged: injectPanel()
-  onCalendarServiceChanged: injectPanel()
 
   SystemClock {
     id: clock
@@ -144,12 +132,16 @@ BarWidget {
 
   Loader {
     id: panelLoader
-    active: true
-    source: Qt.resolvedUrl("Panel.qml")
+    active: false
     visible: false
-    onLoaded: {
-      root.injectPanel()
-      Qt.callLater(root.injectPanel)
+    sourceComponent: Calendar.Panel {
+      moduleName: root.moduleName
+      ipcTarget: root.moduleName
+      bar: root.bar
+      settings: root.settings
+      anchorItem: button
+      hostWidget: root
+      calendarService: root.calendarService
     }
   }
 
