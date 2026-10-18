@@ -1,4 +1,5 @@
 // Run with: node tests/agenda-benchmark.js
+// Both paths use the current date handling; this isolates the indexing cost.
 const { performance } = require('node:perf_hooks')
 const Model = require('../Model.js')
 const keys = Model.monthGrid(2026, 9, 1, '').flatMap(week => week.days.map(day => day.key))
@@ -25,5 +26,5 @@ for (const count of [75, 1000]) {
     Model.agendaItemsForDay(items, key, 'all').length
   }))
   const after = median(() => Model.agendaIndex(items, keys[0], keys[keys.length - 1], 'all'))
-  console.log(`${count} items: ${before} ms before, ${after} ms indexed (median; JavaScript only)`)
+  console.log(`${count} items: ${before} ms repeated scans, ${after} ms indexed (median; JavaScript only)`)
 }
