@@ -35,7 +35,7 @@ Panel {
   property string selectedDateKey: todayKey
   property string requestedRange: ""
 
-  readonly property date viewDate: new Date(viewYear, viewMonth, 1)
+  readonly property date viewDate: new Date(viewYear, viewMonth, 15, 12)
   readonly property bool viewingCurrentMonth: viewYear === today.getFullYear() && viewMonth === today.getMonth()
 
   // Pinned to today, not to the month being browsed — stepping through the
@@ -129,16 +129,14 @@ Panel {
   readonly property bool wideLayout: panel.width >= Style.space(700)
 
   function dateFromKey(key) {
-    var parts = String(key || "").split("-")
-    if (parts.length !== 3) return new Date(root.today.getFullYear(), root.today.getMonth(), root.today.getDate())
-    return new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]))
+    return Model.civilDate(key) || Model.civilDate(root.todayKey)
   }
 
   function selectedDateLabel() {
     var date = root.selectedDate
-    return root.labelLocale.dayName(date.getDay(), Locale.LongFormat)
-      + ", " + Model.ordinalDay(date.getDate())
-      + " " + root.labelLocale.monthName(date.getMonth(), Locale.LongFormat)
+    return root.labelLocale.dayName(date.getUTCDay(), Locale.LongFormat)
+      + ", " + Model.ordinalDay(date.getUTCDate())
+      + " " + root.labelLocale.monthName(date.getUTCMonth(), Locale.LongFormat)
   }
 
   function syncSelectionFromService() {
@@ -167,7 +165,7 @@ Panel {
     if (!root.actualService || !root.weeks || root.weeks.length === 0) return
     var first = root.weeks[0].days[0].key
     var lastCell = root.weeks[root.weeks.length - 1].days[6]
-    var exclusiveEnd = Model.keyForDate(new Date(lastCell.year, lastCell.month, lastCell.day + 1))
+    var exclusiveEnd = Model.keyForCivilDate(new Date(Date.UTC(lastCell.year, lastCell.month, lastCell.day + 1)))
     var token = first + "/" + exclusiveEnd
     if (token === root.requestedRange) return
     root.requestedRange = token
@@ -351,7 +349,7 @@ Panel {
   function moveMonth(delta) {
     var next = Model.stepMonth(viewYear, viewMonth, delta)
     var selected = root.dateFromKey(root.selectedDateKey)
-    var targetDay = Math.min(selected.getDate(), new Date(next.year, next.month + 1, 0).getDate())
+    var targetDay = Math.min(selected.getUTCDate(), new Date(Date.UTC(next.year, next.month + 1, 0)).getUTCDate())
     root.viewYear = next.year
     root.viewMonth = next.month
     root.selectDateKey(Model.dateKey(next.year, next.month, targetDay))
