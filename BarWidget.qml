@@ -4,6 +4,7 @@ import Quickshell.Io
 import qs.Commons
 import qs.Ui
 import "Model.js" as Model
+import "services" as Services
 
 // Date/time label for the bar, and the host for the calendar popup.
 //
@@ -14,10 +15,15 @@ BarWidget {
   id: root
   moduleName: "shivam.clock"
 
-  readonly property var calendarService: root.bar && root.bar.shell
-    && typeof root.bar.shell.serviceFor === "function"
-      ? root.bar.shell.serviceFor(root.moduleName)
-      : null
+  readonly property var calendarService: {
+    var shell = root.bar && root.bar.shell
+    if (!shell) return null
+    var shared = typeof shell.serviceFor === "function"
+      ? shell.serviceFor(root.moduleName) : null
+    // Replacement bars cannot expose the shell-owned service. Share one
+    // fallback client across their widgets, including multiple monitors.
+    return shared || Services.FallbackCalendarService
+  }
 
   property date displayDate: clock.date
 

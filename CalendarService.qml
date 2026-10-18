@@ -2,9 +2,8 @@ import QtQuick
 import Quickshell
 import Quickshell.Io
 
-// Shared calendar state for every bar instance. omarchy-shell creates it
-// once because the manifest declares a keepLoaded service; bar widgets only
-// retrieve it through shell.serviceFor("shivam.clock").
+// Calendar state and socket client. The built-in bar uses the shell's shared
+// keepLoaded instance; replacement bars share a separate fallback singleton.
 Item {
   id: root
 

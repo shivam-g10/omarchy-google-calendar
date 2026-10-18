@@ -100,4 +100,11 @@ Daemon memory snapshot. Shared-shell UI excluded.
 | Service memory (systemd) | 10.66 |
 | Proportional memory (PSS) | 10.21 |
 
+The built-in bar uses the shell's shared calendar client. Replacement bars cannot
+access that instance, so they share one fallback client across all monitors. The
+fallback starts only when needed and remains until the shell's QML engine exits,
+even if the built-in bar is restored. It adds one socket connection and backend
+client thread, with no extra daemon or polling timer. Its additional RAM and CPU
+cost have not been measured and are not included in the snapshot above.
+
 [MIT license](LICENSE) · [Third-party notices](THIRD_PARTY_NOTICES)
