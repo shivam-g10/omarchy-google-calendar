@@ -27,6 +27,10 @@ const OAUTH_TIMEOUT_SECONDS: u64 = 300;
 const MAX_GOOGLE_BODY: usize = 8 * 1024 * 1024;
 const MAX_GOOGLE_ERROR_BODY: usize = 256 * 1024;
 const MAX_CALLBACK_REQUEST: usize = 16 * 1024;
+// Bounds one paged listing so a hostile endpoint cannot page forever while the refresh lock is held.
+const MAX_PAGES: usize = 20;
+const MAX_PAGED_ITEMS: usize = 20_000;
+const PAGED_DEADLINE: Duration = Duration::from_secs(120);
 const CALLBACK_COMPLETE_URL: &str = "https://github.com/shivam-g10/omarchy-google-calendar";
 const SCOPES: &[&str] = &[
     "openid",
@@ -208,7 +212,11 @@ impl GoogleClient {
     ) -> Result<(Vec<Value>, Option<String>)> {
         let mut items = Vec::new();
         let mut page_token: Option<String> = None;
-        loop {
+        let deadline = Instant::now() + PAGED_DEADLINE;
+        for _ in 0..MAX_PAGES {
+            if Instant::now() > deadline {
+                break;
+            }
             let mut parsed = Url::parse(url).map_err(|_| {
                 CalendarError::new("google_response_invalid", "Google API URL is invalid")
             })?;
@@ -226,6 +234,9 @@ impl GoogleClient {
             if let Some(page_items) = response.get("items").and_then(Value::as_array) {
                 items.extend(page_items.iter().filter(|item| item.is_object()).cloned());
             }
+            if items.len() > MAX_PAGED_ITEMS {
+                break;
+            }
             page_token = response
                 .get("nextPageToken")
                 .and_then(Value::as_str)
@@ -240,6 +251,10 @@ impl GoogleClient {
                 ));
             }
         }
+        Err(CalendarError::new(
+            "google_response_too_large",
+            "Google returned more data than the calendar can sync",
+        ))
     }
 
     fn revoke_at(&self, endpoint: &str, refresh_token: &str) -> bool {
@@ -746,6 +761,40 @@ mod tests {
             "primary%40example.com"
         );
         assert_eq!(encode_path_segment("a/b c"), "a%2Fb%20c");
+    }
+
+    #[test]
+    fn paged_items_stop_after_page_limit() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let body = r#"{"items":[{"id":"x"}],"nextPageToken":"more"}"#;
+            let mut served = 0;
+            while let Ok((mut stream, _)) = listener.accept() {
+                read_test_request(&mut stream);
+                stream
+                    .write_all(
+                        format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                            body.len()
+                        )
+                        .as_bytes(),
+                    )
+                    .unwrap();
+                served += 1;
+                if served == MAX_PAGES {
+                    return served;
+                }
+            }
+            served
+        });
+
+        let client = GoogleClient::new(std::path::Path::new("/missing/google-client.json"));
+        let error = client
+            .paged_items(&format!("http://{address}/list"), "token", &BTreeMap::new())
+            .unwrap_err();
+        assert_eq!(error.code, "google_response_too_large");
+        assert_eq!(server.join().unwrap(), MAX_PAGES);
     }
 
     #[test]
